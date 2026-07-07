@@ -37,6 +37,7 @@ okxAI/
 - 不提交钱包密钥、OpenAI/API key、OTP、cookie、session、`auth.json`、`config.toml` 等敏感运行态文件。
 - 修改服务器运行配置后，要用真实命令确认 `codex exec`、`okx-a2a` daemon、agent 在线状态，不只看本地文件。
 - A2A 入站系统事件要走快速路径：优先执行平台消息要求的下一步 CLI，不要先长篇解释或大段读取无关文档；只有 CLI 返回的脚本要求时再读对应 playbook。
+- 服务器 A2A Codex provider 使用 `scripts/okx-a2a-codex-fast.js` 兜底处理平台验证消息，其他消息再委托真实 Codex。
 
 ## CODE MAP
 当前仓库还不是代码项目，没有可索引源码入口；未发现 `.codegraph/`，因此暂不维护符号级 code map。
@@ -72,3 +73,4 @@ okx-a2a agent refresh --json
 - 后续新增 ASP 时，先创建新的 `{AgentName}_workspace/`，再补 `.agents/skills/`。
 - 空目录无法被 git 跟踪，使用 `.gitkeep` 固定必须存在的目录。
 - 广州服务器的 `okx-a2a.service` 需要固定 `WorkingDirectory=/root/okxAl`，避免 AI 子会话从 `/root` 启动导致上下文膨胀。
+- 如果审核验证仍报响应慢，先查 `journalctl --user -u okx-a2a` 中 `a2a-agent-chat` 是否被 wrapper 快速回复。

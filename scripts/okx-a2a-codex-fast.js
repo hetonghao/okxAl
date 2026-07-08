@@ -86,6 +86,15 @@ function emit(text, commandResult) {
   }));
 }
 
+function fastSelfEchoNoop() {
+  const isOwnQueuedMessage = /\bsession-\d{10,}\b/.test(prompt);
+  const isAckEcho = prompt.includes("已收到需求。当前我会先确认任务是否已完成接单确认和托管");
+  if (!isOwnQueuedMessage && !isAckEcho) return false;
+
+  emit("已忽略本 Agent 自己发出的确认消息回声。");
+  process.exit(0);
+}
+
 function extractJobId() {
   return firstMatch([
     /["']jobId["']\s*:\s*["'](0x[0-9a-fA-F]+)["']/,
@@ -212,6 +221,7 @@ function fastChatAck() {
   process.exit(result.status === 0 ? 0 : 1);
 }
 
+fastSelfEchoNoop();
 fastSystemEvent();
 if (prompt.includes("a2a-agent-chat") || prompt.includes("DACS-Probe") || prompt.includes("XMTP group chat")) fastChatAck();
 

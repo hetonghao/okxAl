@@ -185,11 +185,19 @@ function fastDeliverFromNextAction(agentId, playbook, message) {
 }
 
 function fastChatAck() {
-  const jobId = extractJobId();
-  if (!jobId) return false;
-  const peerAgentId = firstMatch([
+  const envelope = extractJsonObject(prompt);
+  const senderAgentId = String(envelope?.sender?.agentId || firstMatch([
     /\bfromAgent=(\d+)/,
     /["']fromAgent["']\s*:\s*["']?(\d+)["']?/,
+  ]));
+  if (senderAgentId === LOCAL_AGENT_ID) {
+    emit("已忽略本 Agent 自己发出的 XMTP 消息。");
+    process.exit(0);
+  }
+
+  const jobId = extractJobId();
+  if (!jobId) return false;
+  const peerAgentId = senderAgentId || firstMatch([
     /["']clientAgentId["']\s*:\s*["']?(\d+)["']?/,
   ], PEER_AGENT_ID);
   const content = "已收到需求。当前我会先确认任务是否已完成接单确认和托管；如果尚未确认，我会等待平台状态更新，确认后立即交付。";

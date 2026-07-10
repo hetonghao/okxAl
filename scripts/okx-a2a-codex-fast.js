@@ -60,7 +60,8 @@ function runNextAction(agentId, message) {
 }
 
 function emit(text, commandResult) {
-  const threadId = `fast-${Date.now()}`;
+  const jobId = extractJobId();
+  const threadId = jobId ? `fast-${jobId.slice(2)}` : `fast-${Date.now()}`;
   console.log(JSON.stringify({ type: "thread.started", thread_id: threadId }));
   console.log(JSON.stringify({ type: "turn.started" }));
   if (commandResult) {
@@ -84,15 +85,6 @@ function emit(text, commandResult) {
     type: "turn.completed",
     usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 },
   }));
-}
-
-function fastSelfEchoNoop() {
-  const isOwnQueuedMessage = /\bsession-\d{10,}\b/.test(prompt);
-  const isAckEcho = prompt.includes("已收到需求。当前我会先确认任务是否已完成接单确认和托管");
-  if (!isOwnQueuedMessage && !isAckEcho) return false;
-
-  emit("已忽略本 Agent 自己发出的确认消息回声。");
-  process.exit(0);
 }
 
 function extractJobId() {
@@ -202,26 +194,24 @@ function fastChatAck() {
   ], PEER_AGENT_ID);
   const content = "已收到需求。当前我会先确认任务是否已完成接单确认和托管；如果尚未确认，我会等待平台状态更新，确认后立即交付。";
   const result = run("/usr/bin/okx-a2a", [
-    "session",
-    "send",
+    "xmtp-send",
     "--job-id",
     jobId,
     "--to-agent-id",
     peerAgentId,
-    "--agent-id",
+    "--session-agent-id",
     LOCAL_AGENT_ID,
-    "--content",
+    "--message",
     content,
     "--json",
   ]);
   emit("已快速回复平台功能验证消息。", {
     ...result,
-    command: `okx-a2a session send --job-id ${jobId} --to-agent-id ${peerAgentId} --agent-id ${LOCAL_AGENT_ID} --content <ack> --json`,
+    command: `okx-a2a xmtp-send --job-id ${jobId} --to-agent-id ${peerAgentId} --session-agent-id ${LOCAL_AGENT_ID} --message <ack> --json`,
   });
   process.exit(result.status === 0 ? 0 : 1);
 }
 
-fastSelfEchoNoop();
 fastSystemEvent();
 if (prompt.includes("a2a-agent-chat") || prompt.includes("DACS-Probe") || prompt.includes("XMTP group chat")) fastChatAck();
 

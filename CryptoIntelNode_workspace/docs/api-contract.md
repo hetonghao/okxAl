@@ -18,7 +18,7 @@ GET /v1/token-risk-score?network=<CAIP-2>&address=<EVM>&locale=zh-CN|en-US
 - Arbitrum One：`eip155:42161`
 - X Layer：`eip155:196`
 
-分析网络与支付网络是两个独立概念。分析请求可指向上述任一网络；支付挑战由官方 OKX x402 中间件生成，当前契约单独声明支付网络 `eip155:196`，禁止从分析 `network` 推导或替换支付网络、资产及挑战内容。
+分析网络与支付网络是两个独立概念。分析请求可指向上述任一网络，其中 `eip155:196` 仅表示可分析 X Layer 资产。当前尚未批准支付网络或支付资产 tuple，因此 OpenAPI 不预设 `x-payment.network`；支付挑战只能在完整 tuple 获具名批准并通过 readiness 后由官方 OKX x402 中间件生成，禁止从分析 `network` 推导或替换支付网络、资产及挑战内容。
 
 ## 成功响应
 

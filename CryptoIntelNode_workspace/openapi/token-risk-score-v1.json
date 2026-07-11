@@ -13,7 +13,6 @@
   ],
   "x-payment": {
     "protocol": "official-okx-x402",
-    "network": "eip155:196",
     "passthrough402": true
   },
   "paths": {

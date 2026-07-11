@@ -10,6 +10,7 @@ import { startServer } from "../src/server.js";
 
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const openapi = JSON.parse(await readFile(resolve(workspace, "openapi/token-risk-score-v1.json"), "utf8"));
+const contractDoc = await readFile(resolve(workspace, "docs/api-contract.md"), "utf8");
 const route = openapi.paths["/v1/token-risk-score"].get;
 const schemas = openapi.components.schemas;
 const analysisNetworks = ["eip155:1", "eip155:56", "eip155:8453", "eip155:42161", "eip155:196"];
@@ -73,8 +74,12 @@ test("Given the paid route, when parsed, then its query boundary is exact", () =
 
 test("Given the service metadata, when inspected, then analysis and payment networks stay separate", () => {
   assert.deepEqual(openapi["x-analysis-networks"], analysisNetworks);
-  assert.deepEqual(openapi["x-payment"], { protocol: "official-okx-x402", network: "eip155:196", passthrough402: true });
-  assert.notStrictEqual(openapi["x-analysis-networks"], openapi["x-payment"].network);
+  assert.deepEqual(openapi["x-payment"], { protocol: "official-okx-x402", passthrough402: true });
+  assert.equal(Object.hasOwn(openapi["x-payment"], "network"), false);
+  assert.equal(openapi["x-analysis-networks"].includes("eip155:196"), true);
+  assert.match(contractDoc, /`eip155:196` 仅表示可分析 X Layer 资产/);
+  assert.match(contractDoc, /当前尚未批准支付网络或支付资产 tuple/);
+  assert.doesNotMatch(contractDoc, /当前契约单独声明支付网络 `eip155:196`/);
 });
 
 test("Given a success response, when parsed, then the versioned risk schema is complete", () => {

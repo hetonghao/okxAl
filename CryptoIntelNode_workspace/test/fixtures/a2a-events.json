@@ -1,0 +1,41 @@
+{
+  "chat": {
+    "agentId": "agent-7",
+    "msgType": "a2a-agent-chat",
+    "jobId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sender": { "role": "user", "agentId": "peer-3" },
+    "message": { "serviceId": "service-9", "messageId": "message-1", "content": "{\"network\":\"eip155:1\",\"address\":\"0x1111111111111111111111111111111111111111\",\"locale\":\"zh-CN\",\"focus\":\"security\"}" }
+  },
+  "accepted": {
+    "agentId": "agent-7",
+    "message": {
+      "source": "system",
+      "event": "job_accepted",
+      "jobId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "serviceId": "service-9",
+      "taskInput": {
+        "network": "eip155:1",
+        "address": "0x1111111111111111111111111111111111111111",
+        "locale": "zh-CN",
+        "focus": "security"
+      }
+    }
+  },
+  "completed": {
+    "agentId": "agent-7",
+    "message": {
+      "source": "system",
+      "event": "job_completed",
+      "jobId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "nonTerminal": {
+    "agentId": "agent-7",
+    "message": {
+      "source": "system",
+      "event": "provider_applied",
+      "jobId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "serviceId": "service-9"
+    }
+  }
+}

@@ -1,17 +1,17 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { createA2AState, digestPayload } from "./state.js";
-import { atomicPublish, recoverAtomicPublishes } from "./state-io.js";
+import { createA2AInbox } from "./inbox.js";
 
 const exec = promisify(execFile);
-const JOB_ID = /^0x[0-9a-f]{64}$/;
 const NETWORKS = new Set(["eip155:1", "eip155:56", "eip155:8453", "eip155:42161", "eip155:196"]);
 const LOCALES = new Set(["zh-CN", "en-US"]);
 const FOCUS = new Set(["security", "liquidity", "concentration"]);
+const MAX_CHAT_BYTES = 64 * 1024;
+const MAX_SENDER_ID_BYTES = 256;
 const TERMINAL = new Map([
   ["job_completed", "completed"],
   ["job_auto_completed", "completed"],
@@ -44,7 +44,9 @@ function isChat(envelope) {
     && typeof envelope.jobId === "string"
     && typeof envelope.sender?.role === "string" && envelope.sender.role.trim().length > 0
     && typeof envelope.sender?.agentId === "string" && envelope.sender.agentId.trim().length > 0
-    && typeof envelope.message?.content === "string";
+    && Buffer.byteLength(envelope.sender.agentId) <= MAX_SENDER_ID_BYTES
+    && typeof envelope.message?.content === "string"
+    && Buffer.byteLength(envelope.message.content) <= MAX_CHAT_BYTES;
 }
 
 function isSystem(envelope) {
@@ -75,35 +77,10 @@ export function createA2AProvider({ state, env = process.env, io = fs, runner = 
     codex: env.CRYPTO_INTEL_CODEX_BIN || "codex",
     onchainos: env.CRYPTO_INTEL_ONCHAINOS_BIN || "onchainos",
   };
-  const inbox = join(state.stateDir, "a2a-inbox");
-  let initialized = false;
+  const inbox = createA2AInbox({ stateDir: state.stateDir, io });
   const delegateEvent = delegate || ((event) => runner(binaries.codex, [
     "exec", "--skip-git-repo-check", "--json", JSON.stringify(event),
   ]));
-
-  function inboxPath(jobId, name) {
-    if (!JOB_ID.test(jobId)) throw new TypeError("jobId must be lowercase 32-byte hex");
-    return join(inbox, jobId, name);
-  }
-
-  async function initializeInbox() {
-    if (initialized) return;
-    await io.mkdir(inbox, { recursive: true, mode: 0o700 });
-    await recoverAtomicPublishes(inbox, JOB_ID, io);
-    initialized = true;
-  }
-
-  async function publish(jobId, name, value) {
-    await initializeInbox();
-    const directory = inboxPath(jobId, "");
-    await io.mkdir(directory, { recursive: true, mode: 0o700 });
-    return atomicPublish(inboxPath(jobId, name), `${JSON.stringify(value)}\n`, io);
-  }
-
-  async function readInbox(jobId, name) {
-    await initializeInbox();
-    return JSON.parse(await io.readFile(inboxPath(jobId, name), "utf8"));
-  }
 
   async function serviceFor(message) {
     if (message.serviceId) return message.serviceId;
@@ -112,7 +89,7 @@ export function createA2AProvider({ state, env = process.env, io = fs, runner = 
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       try {
-        return (await readInbox(message.jobId, "request.json")).serviceId;
+        return (await inbox.readRequest(message.jobId)).serviceId;
       } catch (inboxError) {
         if (inboxError.code === "ENOENT") return "";
         throw inboxError;
@@ -134,20 +111,13 @@ export function createA2AProvider({ state, env = process.env, io = fs, runner = 
     if (serviceId !== identity.serviceId) return { status: "blocked-identity" };
     const taskInput = parseTaskInput(envelope.message.content);
     if (!taskInput) return { status: "blocked-schema" };
-    const contentKey = `digest:${digestPayload(`${envelope.jobId}|${envelope.sender.agentId}|${envelope.message.content}`)}`;
-    const messageKey = `id:${envelope.message.messageId || contentKey}`;
-    if (!await publish(envelope.jobId, "request.json", { ...identity, ...taskInput })) {
-      const request = await readInbox(envelope.jobId, "request.json");
-      if (request.agentId !== identity.agentId || request.serviceId !== identity.serviceId || digestPayload(taskInput) !== digestPayload({
-        network: request.network, address: request.address, locale: request.locale, ...(request.focus ? { focus: request.focus } : {}),
-      })) return { status: "blocked-identity" };
+    for (const durableState of ["accepted", "submitted", "completed", "failed", "delivery-unknown"]) {
+      try { await state.read(envelope.jobId, durableState); return { status: "duplicate" }; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
     }
-    if (!await publish(envelope.jobId, `${digestPayload(messageKey)}.json`, { kind: "message" })) {
-      return { status: "duplicate" };
-    }
-    if (contentKey !== messageKey && !await publish(envelope.jobId, `${digestPayload(contentKey)}.json`, { kind: "content" })) {
-      return { status: "duplicate" };
-    }
+    const request = { ...identity, ...taskInput };
+    const claim = await inbox.claim(envelope.jobId, request, envelope.sender.agentId, digestPayload(taskInput));
+    if (claim.status !== "claimed") return claim;
     await runChecked(binaries.a2a, [
       "xmtp-send", "--job-id", envelope.jobId,
       "--to-agent-id", envelope.sender.agentId,
@@ -171,10 +141,12 @@ export function createA2AProvider({ state, env = process.env, io = fs, runner = 
     if (!serviceId) return { status: "blocked-schema" };
     if (serviceId !== identity.serviceId) return { status: "blocked-identity" };
     if (message.event === "job_accepted") {
+      try { await state.read(message.jobId, "accepted"); return { status: "accepted" }; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
       let taskInput = parseTaskInput(message.taskInput);
       if (!taskInput) {
         try {
-          const saved = await readInbox(message.jobId, "request.json");
+          const saved = await inbox.readRequest(message.jobId);
           if (saved.agentId === identity.agentId && saved.serviceId === identity.serviceId) taskInput = parseTaskInput({
             network: saved.network, address: saved.address, locale: saved.locale, ...(saved.focus ? { focus: saved.focus } : {}),
           });
@@ -194,12 +166,14 @@ export function createA2AProvider({ state, env = process.env, io = fs, runner = 
         },
         ...identity,
       });
+      await inbox.cleanup(message.jobId);
       return { status: "accepted" };
     }
     const terminal = TERMINAL.get(message.event);
     if (terminal) {
       await officialNextAction(message);
       await state.record(message.jobId, terminal, { event: structuredClone(envelope) }, identity);
+      await inbox.cleanup(message.jobId);
       return { status: terminal };
     }
     const result = await delegateEvent(structuredClone(envelope));

@@ -133,5 +133,5 @@ test("真实 provider chat→accepted→worker→submitted→completed 全链且
   assert.deepEqual({ assessments, deliveries }, { assessments: 1, deliveries: 1 });
   assert.equal((await provider.handle(events.completed)).status, "completed");
   assert.equal((await state.read(JOB, "completed")).payload.event.message.event, "job_completed");
-  assert.equal(providerCalls.filter(({ command }) => command === "onchainos").length, 3);
+  assert.equal(providerCalls.filter(({ command }) => command === "onchainos").length, 2);
 });

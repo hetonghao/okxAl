@@ -115,10 +115,19 @@ export async function createX402Payment({ config, facilitatorClient, journal, no
     async processSettlement(paymentPayload, requirements, extensions, transport, overrides) {
       let settlement;
       const response = { status: 200, body: JSON.parse(transport.responseBody.toString()) };
+      const approvedRequirements = {
+        scheme: "exact",
+        network: config.tuple.network,
+        asset: config.tuple.contract,
+        amount: config.tuple.amountAtomic,
+        payTo: config.tuple.payTo,
+        extra: { decimals: config.tuple.decimals, symbol: config.tuple.symbol },
+      };
       await journal.execute({
         paymentHeader: transport.request.paymentHeader,
         request: canonical(transport.request),
         response,
+        expectedSettlement: { network: config.tuple.network, requirements, approvedRequirements },
         settle: async () => {
           settlement = await official.processSettlement(paymentPayload, requirements, extensions, transport, overrides);
           return settlement;

@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { isStoredSuccessResponse, settledSuccessfully, storedSuccessResponse } from "./payment-journal-settlement.js";
+import {
+  isStoredSuccessResponse,
+  settledSuccessfully,
+  settlementContextMatches,
+  storedSuccessResponse,
+} from "./payment-journal-settlement.js";
 
 const HASH = /^[a-f0-9]{64}$/;
 const STATES = new Set(["prepared", "settled", "reconciliation_required"]);
@@ -53,10 +58,13 @@ async function durableWrite(directory, value, io) {
 }
 
 function validateState(value, paymentHeaderHash, requestHash) {
+  const createdAt = Date.parse(value?.createdAt);
+  const updatedAt = Date.parse(value?.updatedAt);
   if (
     !value || value.schemaVersion !== 1 || !STATES.has(value.status)
     || value.paymentHeaderHash !== paymentHeaderHash || value.requestHash !== requestHash
     || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string"
+    || !Number.isFinite(createdAt) || !Number.isFinite(updatedAt) || createdAt > updatedAt
   ) throw new PaymentReconciliationError("invalid payment journal state");
   if (value.status !== "reconciliation_required" && !isStoredSuccessResponse(value.response)) {
     throw new PaymentReconciliationError("invalid settled response");
@@ -110,7 +118,7 @@ export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE
     throw new PaymentReconciliationError();
   }
 
-  async function execute({ paymentHeader, request, response, settle, flush, fault = () => {} }) {
+  async function execute({ paymentHeader, request, response, expectedSettlement, settle, flush, fault = () => {} }) {
     if (!response || !Number.isInteger(response.status) || typeof settle !== "function" || typeof flush !== "function") {
       throw new TypeError("response, settle and flush are required");
     }
@@ -158,8 +166,9 @@ export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE
     await durableWrite(identity.directory, prepared, io);
     await fault("afterPreparedWrite");
     await fault("beforeSettlement");
+    if (!settlementContextMatches(expectedSettlement)) await markReconciliation(identity, prepared);
     const settlement = await settle();
-    if (!settledSuccessfully(settlement)) await markReconciliation(identity, prepared);
+    if (!settledSuccessfully(settlement, expectedSettlement)) await markReconciliation(identity, prepared);
     await fault("afterSettlement");
     await fault("beforeSettledWrite");
     await durableWrite(identity.directory, {

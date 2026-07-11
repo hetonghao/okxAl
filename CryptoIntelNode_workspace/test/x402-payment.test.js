@@ -88,7 +88,7 @@ function facilitator(calls) {
     },
     settle: async () => {
       calls.settlement += 1;
-      return { success: true, status: "success", transaction: "0xsynthetic", network, payer: address };
+      return { success: true, status: "success", transaction: `0x${"a".repeat(64)}`, network, payer: address };
     },
   };
 }

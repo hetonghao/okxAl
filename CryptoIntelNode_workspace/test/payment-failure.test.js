@@ -38,10 +38,22 @@ const response = {
   },
 };
 const paymentHeader = "signed-wallet-secret";
+const approvedSettlement = {
+  network: "eip155:1",
+  approvedRequirements: {
+    scheme: "exact",
+    network: "eip155:1",
+    asset: "0x1111111111111111111111111111111111111111",
+    amount: "20000",
+    payTo: "0x2222222222222222222222222222222222222222",
+    extra: { decimals: 6, symbol: "SYNTH" },
+  },
+};
+approvedSettlement.requirements = approvedSettlement.approvedRequirements;
 const settlementSuccess = {
   success: true,
   status: "success",
-  transaction: "0xsettled",
+  transaction: `0x${"a".repeat(64)}`,
   network: "eip155:1",
 };
 
@@ -58,6 +70,7 @@ async function run(journal, overrides = {}) {
     paymentHeader,
     request,
     response,
+    expectedSettlement: approvedSettlement,
     settle: async () => { settlements += 1; return settlementSuccess; },
     flush: async (value) => { flushes += 1; assert.deepEqual(value, response); },
     ...overrides,
@@ -156,6 +169,7 @@ for (const point of ["afterPreparedWrite", "beforeSettlement", "afterSettlement"
         paymentHeader,
         request,
         response,
+        expectedSettlement: approvedSettlement,
         settle: async () => { settlements += 1; return settlementSuccess; },
         flush: async () => { flushes += 1; },
       }),
@@ -220,6 +234,30 @@ for (const [name, corrupt] of [
     ...value,
     response: { ...value.response, body: { ...value.response.body, schemaVersion: 1 } },
   })],
+  ["unparseable createdAt", (value) => ({ ...value, createdAt: "not-a-date" })],
+  ["unparseable updatedAt", (value) => ({ ...value, updatedAt: "not-a-date" })],
+  ["reverse-ordered timestamps", (value) => ({ ...value, createdAt: "2026-07-12T00:00:01Z", updatedAt: "2026-07-12T00:00:00Z" })],
+  ["unknown schema version", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, schemaVersion: "2.0" } } })],
+  ["empty score version", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, scoreVersion: "" } } })],
+  ["unknown score version", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, scoreVersion: "risk-v2.0.0" } } })],
+  ["empty request id", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, requestId: " " } } })],
+  ["non-CAIP network", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, asset: { ...value.response.body.asset, network: "ethereum" } } } })],
+  ["unsupported network", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, asset: { ...value.response.body.asset, network: "eip155:999" } } } })],
+  ["malformed address", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, asset: { ...value.response.body.asset, address: "0xabc" } } } })],
+  ["zero address", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, asset: { ...value.response.body.asset, address: `0x${"0".repeat(40)}` } } } })],
+  ["out-of-range assessment score", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, assessment: { ...value.response.body.assessment, score: 101 } } } })],
+  ["unknown assessment level", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, assessment: { ...value.response.body.assessment, level: "severe" } } } })],
+  ["out-of-range confidence", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, assessment: { ...value.response.body.assessment, confidence: 1.01 } } } })],
+  ["out-of-range dimension score", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, dimensions: { ...value.response.body.dimensions, security: { ...value.response.body.dimensions.security, score: -1 } } } } })],
+  ["unknown dimension status", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, dimensions: { ...value.response.body.dimensions, security: { ...value.response.body.dimensions.security, status: "unknown" } } } } })],
+  ["unparseable freshness observedAt", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, freshness: { ...value.response.body.freshness, observedAt: "not-a-date" } } } })],
+  ["reverse-ordered freshness", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, freshness: { ...value.response.body.freshness, observedAt: "2026-07-11T00:05:00Z", expiresAt: "2026-07-11T00:00:00Z" } } } })],
+  ["unknown evidence dimension", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, evidence: [{ ...value.response.body.evidence[0], dimension: "governance" }] } } })],
+  ["empty evidence source", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, evidence: [{ ...value.response.body.evidence[0], source: " " }] } } })],
+  ["empty evidence summary", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, evidence: [{ ...value.response.body.evidence[0], summary: "" }] } } })],
+  ["unparseable evidence observedAt", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, evidence: [{ ...value.response.body.evidence[0], observedAt: "not-a-date" }] } } })],
+  ["evidence observed after freshness expiry", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, evidence: [{ ...value.response.body.evidence[0], observedAt: "2026-07-11T00:06:00Z" }] } } })],
+  ["unknown disclaimer", (value) => ({ ...value, response: { ...value.response, body: { ...value.response.body, disclaimer: "Investment advice." } } })],
 ]) {
   test(`Given a settled response with ${name}, when read, then readiness and replay fail closed`, async (context) => {
     const { journal } = await fixture(context);
@@ -276,7 +314,10 @@ for (const [name, settlement] of [
   ["incomplete success", { success: true }],
   ["pending success", { ...settlementSuccess, status: "pending" }],
   ["success without transaction", { ...settlementSuccess, transaction: "" }],
+  ["success with blank transaction", { ...settlementSuccess, transaction: "   " }],
+  ["success with malformed transaction", { ...settlementSuccess, transaction: "0xsettled" }],
   ["success without network", { ...settlementSuccess, network: "" }],
+  ["success on an attacker network", { ...settlementSuccess, network: "eip155:666" }],
 ]) {
   test(`Given settlement returns ${name}, when executed, then it requires reconciliation and never flushes success`, async (context) => {
     const { stateDir, journal } = await fixture(context);
@@ -289,6 +330,36 @@ for (const [name, settlement] of [
     await assert.rejects(run(createPaymentJournal({ stateDir })), PaymentReconciliationError);
   });
 }
+
+test("Given settlement requirements differ from the approved identity, when settlement succeeds, then it reconciles without flushing", async (context) => {
+  const { stateDir, journal } = await fixture(context);
+  let settlements = 0;
+  let flushes = 0;
+  await assert.rejects(run(journal, {
+    expectedSettlement: {
+      ...approvedSettlement,
+      requirements: { ...approvedSettlement.requirements, amount: "999" },
+    },
+    settle: async () => { settlements += 1; return settlementSuccess; },
+    flush: async () => { flushes += 1; },
+  }), PaymentReconciliationError);
+  assert.equal(settlements, 0);
+  assert.equal(flushes, 0);
+  await assert.rejects(run(createPaymentJournal({ stateDir })), PaymentReconciliationError);
+});
+
+test("Given inherited or accessor settlement fields, when settlement is validated, then own-data checks fail without executing getters", async (context) => {
+  const inherited = Object.create(settlementSuccess);
+  let getterCalls = 0;
+  const accessor = { ...settlementSuccess };
+  Object.defineProperty(accessor, "transaction", { get() { getterCalls += 1; return settlementSuccess.transaction; } });
+
+  for (const settlement of [inherited, accessor]) {
+    const { journal } = await fixture(context);
+    await assert.rejects(run(journal, { settle: async () => settlement }), PaymentReconciliationError);
+  }
+  assert.equal(getterCalls, 0);
+});
 
 test("Given expired and fresh records, when cleanup runs, then expired responses become reconciliation tombstones and cannot be charged again", async (context) => {
   let now = Date.parse("2026-07-11T00:00:00.000Z");

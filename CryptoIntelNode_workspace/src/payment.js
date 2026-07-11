@@ -6,6 +6,22 @@ import {
 } from "./payment-sdk.js";
 
 const ADDRESS = /^0x(?!0{40}$)[0-9a-fA-F]{40}$/;
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+async function abortable(client, method, args, timeoutMs, requestSignal) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(requestSignal?.reason);
+  requestSignal?.addEventListener("abort", abort, { once: true });
+  if (requestSignal?.aborted) abort();
+  const timer = setTimeout(() => controller.abort(new DOMException(`${method} deadline exceeded`, "TimeoutError")), timeoutMs);
+  timer.unref?.();
+  try {
+    return await client[method](...args, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    requestSignal?.removeEventListener("abort", abort);
+  }
+}
 
 function validDate(value) {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -54,10 +70,11 @@ function canonical(context) {
   return { method: context.method, path: context.path, query: context.adapter.getQueryParams() };
 }
 
-export async function createX402Payment({ config, facilitatorClient, journal, now, dependencies = {} } = {}) {
+export async function createX402Payment({ config, facilitatorClient, journal, now, timeoutMs = DEFAULT_TIMEOUT_MS, dependencies = {} } = {}) {
   const reasons = paymentConfigReasons(config, now);
   if (reasons.length) throw new Error(`payment blocked: ${reasons.join("; ")}`);
   if (!facilitatorClient || !journal) throw new TypeError("facilitatorClient and journal are required");
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError("timeoutMs must be a positive integer");
   const ResourceServer = dependencies.x402ResourceServer ?? x402ResourceServer;
   const Scheme = dependencies.ExactEvmScheme ?? ExactEvmScheme;
   const HTTPServer = dependencies.x402HTTPResourceServer ?? x402HTTPResourceServer;
@@ -67,7 +84,12 @@ export async function createX402Payment({ config, facilitatorClient, journal, no
       ? { asset: config.tuple.contract, amount: config.tuple.amountAtomic, extra: { decimals: config.tuple.decimals, symbol: config.tuple.symbol } }
       : null
   ));
-  const resourceServer = new ResourceServer(facilitatorClient).register(config.tuple.network, scheme);
+  const requests = new AsyncLocalStorage();
+  const resourceServer = new ResourceServer({
+    getSupported: (...args) => facilitatorClient.getSupported(...args),
+    verify: (...args) => abortable(facilitatorClient, "verify", args, timeoutMs, requests.getStore()),
+    settle: (...args) => abortable(facilitatorClient, "settle", args, timeoutMs, requests.getStore()),
+  }).register(config.tuple.network, scheme);
   await resourceServer.initialize();
   const resourceConfig = { scheme: "exact", network: config.tuple.network, payTo: config.tuple.payTo, price: config.runtimePrice };
   assertApprovedRequirements(config, await resourceServer.buildPaymentRequirements(resourceConfig));
@@ -106,5 +128,7 @@ export async function createX402Payment({ config, facilitatorClient, journal, no
       return settlement;
     },
   };
-  return middleware(journaled, undefined, undefined, false);
+  const officialMiddleware = middleware(journaled, undefined, undefined, false);
+  return (request, response, next) => requests.run(request.paymentSignal, () => officialMiddleware(request, response, next));
 }
+import { AsyncLocalStorage } from "node:async_hooks";

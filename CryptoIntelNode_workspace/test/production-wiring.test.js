@@ -132,6 +132,7 @@ test("approved API wiring uses real injected source, risk, journal and x402 inst
   assert.deepEqual(observed.journal, { stateDir: "/tmp/crypto-intel-wiring-api" });
   assert.equal(observed.payment.journal, journal);
   assert.equal(observed.payment.facilitatorClient, facilitator);
+  assert.equal(observed.payment.timeoutMs, 10_000);
   assert.equal(observed.app.riskService, riskService);
   assert.equal(observed.app.paymentMiddleware, paymentMiddleware);
   assert.deepEqual(await observed.app.gateReader(), {

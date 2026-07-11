@@ -76,7 +76,9 @@ export async function createApiRuntime({
     });
     journal = journalFactory({ stateDir });
     const facilitatorClient = facilitatorFactory(facilitatorConfig(env));
-    paymentMiddleware = await paymentFactory({ config: payment, facilitatorClient, journal });
+    const timeoutMs = Number(env.CRYPTO_INTEL_PAYMENT_TIMEOUT_MS ?? 10_000);
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error("CRYPTO_INTEL_PAYMENT_TIMEOUT_MS must be a positive integer");
+    paymentMiddleware = await paymentFactory({ config: payment, facilitatorClient, journal, timeoutMs });
   }
 
   const gateReader = async () => gates.reasons.length ? {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -154,4 +155,84 @@ test("Given an invalid signature, when requested, then handler and settlement re
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   assert.equal(response.status, 402);
   assert.deepEqual(calls, { handler: 0, verify: 1, settlement: 0 });
+});
+
+for (const phase of ["verify", "settle"]) {
+  test(`Given a hung ${phase}, when its deadline expires, then admission releases only after the facilitator aborts`, async (context) => {
+    const stateDir = await mkdtemp(join(tmpdir(), `crypto-intel-${phase}-timeout-`));
+    context.after(() => rm(stateDir, { recursive: true, force: true }));
+    let aborted = false;
+    const stalled = facilitator({ verify: 0, settlement: 0 });
+    stalled[phase] = (...args) => new Promise((_, reject) => {
+      const signal = args.at(-1)?.signal;
+      signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(signal.reason);
+      }, { once: true });
+    });
+    const admission = createAdmissionControl({ activeLimit: 1, queueLimit: 0 });
+    const paymentMiddleware = await createX402Payment({
+      config: approved(), facilitatorClient: stalled, journal: createPaymentJournal({ stateDir }),
+      now: "2026-07-11T00:00:00.000Z", timeoutMs: 20,
+    });
+    const app = createApp({
+      admission, paymentMiddleware,
+      gateReader: async () => ({ source: { status: 200 }, payment: { status: 200 }, economics: { status: 200 } }),
+      readinessChecks: { cache: async () => ({ status: 200 }), journal: async () => ({ status: 200 }), spool: async () => ({ status: 200, blockers: [] }) },
+      riskService: { assess: async () => assessment() }, logger: () => {},
+    });
+    const server = await startServer({ app, port: 0 });
+    context.after(() => new Promise((resolve) => server.close(resolve)));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/token-risk-score?${query}`, {
+      headers: { "payment-signature": signature() },
+    });
+
+    assert.equal(response.status, 402);
+    assert.equal(aborted, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(admission.snapshot(), { active: 0, queued: 0, accepting: true });
+  });
+}
+
+test("Given a hung payment verification, when the client disconnects, then its abort reaches the facilitator before admission releases", async (context) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "crypto-intel-payment-disconnect-"));
+  context.after(() => rm(stateDir, { recursive: true, force: true }));
+  let verificationStarted;
+  const started = new Promise((resolve) => { verificationStarted = resolve; });
+  let facilitatorAborted;
+  const aborted = new Promise((resolve) => { facilitatorAborted = resolve; });
+  const stalled = facilitator({ verify: 0, settlement: 0 });
+  stalled.verify = (...args) => new Promise((_, reject) => {
+    const signal = args.at(-1)?.signal;
+    verificationStarted();
+    signal.addEventListener("abort", () => {
+      facilitatorAborted();
+      reject(signal.reason);
+    }, { once: true });
+  });
+  const admission = createAdmissionControl({ activeLimit: 1, queueLimit: 0 });
+  const paymentMiddleware = await createX402Payment({
+    config: approved(), facilitatorClient: stalled, journal: createPaymentJournal({ stateDir }),
+    now: "2026-07-11T00:00:00.000Z", timeoutMs: 5_000,
+  });
+  const app = createApp({
+    admission, paymentMiddleware,
+    gateReader: async () => ({ source: { status: 200 }, payment: { status: 200 }, economics: { status: 200 } }),
+    readinessChecks: { cache: async () => ({ status: 200 }), journal: async () => ({ status: 200 }), spool: async () => ({ status: 200, blockers: [] }) },
+    riskService: { assess: async () => assessment() }, logger: () => {},
+  });
+  const server = await startServer({ app, port: 0 });
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const client = httpRequest(`http://127.0.0.1:${server.address().port}/v1/token-risk-score?${query}`, {
+    headers: { "payment-signature": signature() },
+  });
+  client.on("error", () => {});
+  client.end();
+  await started;
+  client.destroy();
+  await aborted;
+  for (let attempts = 0; admission.snapshot().active && attempts < 20; attempts += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(admission.snapshot(), { active: 0, queued: 0, accepting: true });
 });

@@ -92,14 +92,16 @@ function reserve(admission, paymentMiddleware, riskService) {
           .then(resolve, reject);
       };
       try {
+        request.paymentSignal = signal;
         const pending = paymentMiddleware(request, response, paid);
-        if (pending?.catch) pending.catch(reject);
+        if (pending?.then) pending.then(finishPaymentResponse, reject);
       } catch (error) {
         reject(error);
       }
     }), { signal: controller.signal }).catch((error) => {
       if (!controller.signal.aborted) next(error);
     }).finally(() => {
+      delete request.paymentSignal;
       request.off("aborted", abort);
       response.off("close", close);
     });

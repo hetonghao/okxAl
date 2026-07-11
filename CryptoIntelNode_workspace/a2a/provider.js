@@ -117,14 +117,21 @@ export function createA2AProvider({ state, env = process.env, io = fs, runner = 
     }
     const request = { ...identity, ...taskInput };
     const claim = await inbox.claim(envelope.jobId, request, envelope.sender.agentId, digestPayload(taskInput));
-    if (claim.status !== "claimed") return claim;
-    await runChecked(binaries.a2a, [
-      "xmtp-send", "--job-id", envelope.jobId,
-      "--to-agent-id", envelope.sender.agentId,
-      "--session-agent-id", identity.agentId,
-      "--message", "已收到请求，正在等待平台接单确认后处理。", "--json",
-    ], 1800);
-    return { status: "acknowledged" };
+    if (!["claimed", "retry-ack"].includes(claim.status)) return claim;
+    if (!await inbox.beginAck(envelope.jobId)) return { status: "ack-in-progress" };
+    try {
+      await runChecked(binaries.a2a, [
+        "xmtp-send", "--job-id", envelope.jobId,
+        "--to-agent-id", envelope.sender.agentId,
+        "--session-agent-id", identity.agentId,
+        "--message", "已收到请求，正在等待平台接单确认后处理。", "--json",
+      ], 1800);
+      await inbox.finishAck(envelope.jobId, true);
+      return { status: "acknowledged" };
+    } catch (error) {
+      await inbox.finishAck(envelope.jobId, false);
+      throw error;
+    }
   }
 
   async function officialNextAction(message) {

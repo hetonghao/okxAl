@@ -94,7 +94,11 @@ test("Given durable dedupe 标记失败 When chat 入站 Then ACK fail closed", 
   const stateDir = await mkdtemp(join(tmpdir(), "a2a-provider-enospc-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
   const state = createA2AState({ stateDir });
-  const io = { mkdir: async () => {}, readdir: async () => [], open: async () => { throw new Error("ENOSPC"); }, readFile, unlink: async () => {} };
+  const io = {
+    mkdir: async () => {}, readdir: async () => [],
+    lstat: async () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); },
+    open: async () => { throw new Error("ENOSPC"); }, readFile, rm: async () => {}, unlink: async () => {},
+  };
   let calls = 0;
   const { provider } = await setup(t, { state, io, runner: async () => { calls += 1; return { status: 0 }; } });
   await assert.rejects(provider.handle(fixtures.chat), /ENOSPC/);

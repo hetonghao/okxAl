@@ -156,7 +156,7 @@ export function assertApprovedAdapters(policy, adapters) {
   return adapters;
 }
 
-export async function loadAdapterRegistry({ env = process.env } = {}) {
+export async function loadAdapterRegistry({ env = process.env, policy } = {}) {
   let modules;
   try {
     modules = JSON.parse(env.CRYPTO_INTEL_SOURCE_ADAPTER_MODULES ?? "{}");
@@ -165,7 +165,10 @@ export async function loadAdapterRegistry({ env = process.env } = {}) {
   }
   if (!modules || Array.isArray(modules) || typeof modules !== "object") throw new SourcePolicyError("CRYPTO_INTEL_SOURCE_ADAPTER_MODULES must be an object");
   const adapters = {};
-  for (const [id, specifier] of Object.entries(modules)) {
+  const approvedIds = (policy?.sources ?? []).filter(({ id, status }) => status === "approved" && typeof id === "string" && id.trim()).map(({ id }) => id);
+  for (const id of approvedIds) {
+    const specifier = modules[id];
+    if (specifier === undefined) continue;
     if (typeof specifier !== "string" || !specifier.startsWith("file:")) throw new SourcePolicyError(`${id} adapter module must be a file URL`);
     const loaded = await import(specifier);
     const adapter = loaded.default ?? loaded.adapter;

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { createApiRuntime } from "../scripts/start-api.js";
 import { runA2AWorker } from "../scripts/run-a2a-worker.js";
+import { loadAdapterRegistry } from "../src/sources/index.js";
 
 function approvedReadiness() {
   const approval = {
@@ -40,6 +42,36 @@ function approvedReadiness() {
 }
 
 const readApproved = (values) => async (name) => structuredClone(values[name]);
+
+test("adapter registry imports only policy-approved named sources", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "crypto-intel-adapters-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const approvedModule = join(directory, "approved.mjs");
+  const blockedModule = join(directory, "blocked.mjs");
+  const extraModule = join(directory, "extra.mjs");
+  const unnamedModule = join(directory, "unnamed.mjs");
+  const blockedMarker = join(directory, "blocked-imported");
+  const extraMarker = join(directory, "extra-imported");
+  const unnamedMarker = join(directory, "unnamed-imported");
+  await writeFile(approvedModule, "export default async function adapter() {}\n");
+  await writeFile(blockedModule, `import { writeFile } from "node:fs/promises"; await writeFile(${JSON.stringify(blockedMarker)}, "bad"); export default async function adapter() {}\n`);
+  await writeFile(extraModule, `import { writeFile } from "node:fs/promises"; await writeFile(${JSON.stringify(extraMarker)}, "bad"); export default async function adapter() {}\n`);
+  await writeFile(unnamedModule, `import { writeFile } from "node:fs/promises"; await writeFile(${JSON.stringify(unnamedMarker)}, "bad"); export default async function adapter() {}\n`);
+  const registry = await loadAdapterRegistry({
+    env: { CRYPTO_INTEL_SOURCE_ADAPTER_MODULES: JSON.stringify({
+      synthetic: pathToFileURL(approvedModule).href,
+      blocked: pathToFileURL(blockedModule).href,
+      extra: pathToFileURL(extraModule).href,
+      undefined: pathToFileURL(unnamedModule).href,
+    }) },
+    policy: { sources: [{ id: "synthetic", status: "approved" }, { id: "blocked", status: "pending" }, { status: "approved" }] },
+  });
+
+  assert.deepEqual(Object.keys(registry), ["synthetic"]);
+  await assert.rejects(access(blockedMarker), { code: "ENOENT" });
+  await assert.rejects(access(extraMarker), { code: "ENOENT" });
+  await assert.rejects(access(unnamedMarker), { code: "ENOENT" });
+});
 
 test("approved API wiring probes the real payment journal instance", async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "crypto-intel-journal-ready-"));

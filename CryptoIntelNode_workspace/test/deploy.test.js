@@ -147,6 +147,7 @@ test("deployment artifacts satisfy the local contract", async () => {
     },
     readReadiness: async (name) => structuredClone(gates[name]),
     createState(options) { observed.stateOptions = options; return state; },
+    adapterRegistryFactory: async () => ({ synthetic: async () => null }),
     createWorker(options) {
       observed.workerOptions = options;
       return { async runOnce() { observed.runs += 1; } };

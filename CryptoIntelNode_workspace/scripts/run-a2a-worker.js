@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createA2AState } from "../a2a/state.js";
 import { createA2AWorker } from "../a2a/worker.js";
 import { createRiskService } from "../src/risk-service.js";
-import { createSourceLoader } from "../src/sources/index.js";
+import { assertApprovedAdapters, createSourceLoader, loadAdapterRegistry } from "../src/sources/index.js";
 import { evaluateGates } from "./check-gates.js";
 
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,6 +31,7 @@ export async function runA2AWorker({
   readReadiness = readJson,
   createState = createA2AState,
   createWorker = createA2AWorker,
+  adapterRegistryFactory = loadAdapterRegistry,
   sourceLoaderFactory = createSourceLoader,
   riskServiceFactory = createRiskService,
   runner,
@@ -50,7 +51,13 @@ export async function runA2AWorker({
   }
   if (reasons.length) return { status: "blocked", reasons };
 
-  const loadSource = sourceLoaderFactory({ policy: dataSources });
+  let adapters;
+  try {
+    adapters = assertApprovedAdapters(dataSources, await adapterRegistryFactory({ env, policy: dataSources }));
+  } catch (error) {
+    return { status: "blocked", reasons: [error.message] };
+  }
+  const loadSource = sourceLoaderFactory({ policy: dataSources, adapters });
   const riskService = riskServiceFactory({
     sources: dataSources.sources.map((source) => ({
       id: source.id,

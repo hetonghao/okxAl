@@ -128,7 +128,7 @@ function validateRequest(sourceId, network, address) {
 }
 
 export function createSourceLoader({ policy, policyUrl = DEFAULT_POLICY, adapters = {}, now = Date.now, retryOptions = {} } = {}) {
-  return async ({ sourceId, network, address, signal }) => {
+  const load = async ({ sourceId, network, address, signal }) => {
     validateRequest(sourceId, network, address);
     const currentPolicy = policy ?? JSON.parse(await readFile(policyUrl, "utf8"));
     approvedSource(currentPolicy, sourceId, network, now());
@@ -142,4 +142,35 @@ export function createSourceLoader({ policy, policyUrl = DEFAULT_POLICY, adapter
     if (raw?.status === 429 || raw?.status >= 500) throw new SourceDataError(`source failed with status ${raw.status}`);
     return normalize(raw, sourceId, network, now());
   };
+  load.readiness = async () => {
+    const currentPolicy = policy ?? JSON.parse(await readFile(policyUrl, "utf8"));
+    const missing = (currentPolicy.sources ?? []).filter(({ status, id }) => status === "approved" && typeof adapters[id] !== "function").map(({ id }) => id);
+    return { status: missing.length ? 503 : 200, blockers: missing.map((id) => `source-adapter-${id}`) };
+  };
+  return load;
+}
+
+export function assertApprovedAdapters(policy, adapters) {
+  const missing = (policy?.sources ?? []).filter(({ status, id }) => status === "approved" && typeof adapters?.[id] !== "function").map(({ id }) => id);
+  if (missing.length) throw new SourcePolicyError(`approved production adapter missing: ${missing.join(", ")}`);
+  return adapters;
+}
+
+export async function loadAdapterRegistry({ env = process.env } = {}) {
+  let modules;
+  try {
+    modules = JSON.parse(env.CRYPTO_INTEL_SOURCE_ADAPTER_MODULES ?? "{}");
+  } catch {
+    throw new SourcePolicyError("CRYPTO_INTEL_SOURCE_ADAPTER_MODULES must be JSON");
+  }
+  if (!modules || Array.isArray(modules) || typeof modules !== "object") throw new SourcePolicyError("CRYPTO_INTEL_SOURCE_ADAPTER_MODULES must be an object");
+  const adapters = {};
+  for (const [id, specifier] of Object.entries(modules)) {
+    if (typeof specifier !== "string" || !specifier.startsWith("file:")) throw new SourcePolicyError(`${id} adapter module must be a file URL`);
+    const loaded = await import(specifier);
+    const adapter = loaded.default ?? loaded.adapter;
+    if (typeof adapter !== "function") throw new SourcePolicyError(`${id} adapter module must export a function`);
+    adapters[id] = adapter;
+  }
+  return adapters;
 }

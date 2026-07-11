@@ -78,7 +78,9 @@ export async function createApiRuntime({
     const facilitatorClient = facilitatorFactory(facilitatorConfig(env));
     const timeoutMs = Number(env.CRYPTO_INTEL_PAYMENT_TIMEOUT_MS ?? 10_000);
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error("CRYPTO_INTEL_PAYMENT_TIMEOUT_MS must be a positive integer");
-    paymentMiddleware = await paymentFactory({ config: payment, facilitatorClient, journal, timeoutMs });
+    const startupTimeoutMs = Number(env.CRYPTO_INTEL_PAYMENT_STARTUP_TIMEOUT_MS ?? 10_000);
+    if (!Number.isInteger(startupTimeoutMs) || startupTimeoutMs <= 0) throw new Error("CRYPTO_INTEL_PAYMENT_STARTUP_TIMEOUT_MS must be a positive integer");
+    paymentMiddleware = await paymentFactory({ config: payment, facilitatorClient, journal, timeoutMs, startupTimeoutMs });
   }
 
   const gateReader = async () => gates.reasons.length ? {

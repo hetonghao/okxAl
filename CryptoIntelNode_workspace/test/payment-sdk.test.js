@@ -65,6 +65,29 @@ test("Given the pinned SDK adapter, when loaded, then official exports are avail
   for (const value of exports) assert.equal(typeof value, "function");
 });
 
+test("Given a half-open facilitator HTTP response, when getSupported is aborted, then the SDK request rejects and the server can close", async (context) => {
+  // Given
+  const facilitator = createServer((_request, _response) => {});
+  await new Promise((resolveListen) => facilitator.listen(0, "127.0.0.1", resolveListen));
+  context.after(() => new Promise((resolveClose) => {
+    facilitator.closeAllConnections();
+    facilitator.close(resolveClose);
+  }));
+  const { port } = facilitator.address();
+  const client = new OKXFacilitatorClient({
+    apiKey: "fixture-key", secretKey: "fixture-secret", passphrase: "fixture-passphrase",
+    baseUrl: `http://127.0.0.1:${port}`,
+  });
+  const controller = new AbortController();
+
+  // When
+  const pending = client.getSupported({ signal: controller.signal });
+  controller.abort(new DOMException("startup deadline exceeded", "TimeoutError"));
+
+  // Then
+  await assert.rejects(pending, { name: "TimeoutError", message: "startup deadline exceeded" });
+});
+
 test("Given the lockfile, when inspected, then exact versions and licenses are pinned", async () => {
   // Given / When
   const lock = JSON.parse(await readFile(resolve(workspace, "package-lock.json"), "utf8"));

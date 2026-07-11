@@ -16,6 +16,16 @@ export {
 };
 
 export class OKXFacilitatorClient extends OfficialOKXFacilitatorClient {
+  async getSupported({ signal } = {}) {
+    const path = "/api/v6/pay/x402/supported";
+    const response = await fetch(this.config.baseUrl + path, {
+      headers: this.createHeaders("GET", path), signal,
+    });
+    if (!response.ok) throw new Error(`OKX getSupported failed: ${response.status}`);
+    const json = await response.json();
+    return json.data ?? json;
+  }
+
   async post(path, bodyObject, { signal } = {}) {
     const body = JSON.stringify(bodyObject);
     const response = await fetch(this.config.baseUrl + path, {

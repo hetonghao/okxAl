@@ -70,11 +70,12 @@ function canonical(context) {
   return { method: context.method, path: context.path, query: context.adapter.getQueryParams() };
 }
 
-export async function createX402Payment({ config, facilitatorClient, journal, now, timeoutMs = DEFAULT_TIMEOUT_MS, dependencies = {} } = {}) {
+export async function createX402Payment({ config, facilitatorClient, journal, now, timeoutMs = DEFAULT_TIMEOUT_MS, startupTimeoutMs = DEFAULT_TIMEOUT_MS, dependencies = {} } = {}) {
   const reasons = paymentConfigReasons(config, now);
   if (reasons.length) throw new Error(`payment blocked: ${reasons.join("; ")}`);
   if (!facilitatorClient || !journal) throw new TypeError("facilitatorClient and journal are required");
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError("timeoutMs must be a positive integer");
+  if (!Number.isInteger(startupTimeoutMs) || startupTimeoutMs <= 0) throw new TypeError("startupTimeoutMs must be a positive integer");
   const ResourceServer = dependencies.x402ResourceServer ?? x402ResourceServer;
   const Scheme = dependencies.ExactEvmScheme ?? ExactEvmScheme;
   const HTTPServer = dependencies.x402HTTPResourceServer ?? x402HTTPResourceServer;
@@ -86,11 +87,16 @@ export async function createX402Payment({ config, facilitatorClient, journal, no
   ));
   const requests = new AsyncLocalStorage();
   const resourceServer = new ResourceServer({
-    getSupported: (...args) => facilitatorClient.getSupported(...args),
+    getSupported: (...args) => abortable(facilitatorClient, "getSupported", args, startupTimeoutMs),
     verify: (...args) => abortable(facilitatorClient, "verify", args, timeoutMs, requests.getStore()),
     settle: (...args) => abortable(facilitatorClient, "settle", args, timeoutMs, requests.getStore()),
   }).register(config.tuple.network, scheme);
-  await resourceServer.initialize();
+  try {
+    await resourceServer.initialize();
+  } catch (error) {
+    if (error instanceof Error && error.cause instanceof DOMException && error.cause.name === "TimeoutError") throw error.cause;
+    throw error;
+  }
   const resourceConfig = { scheme: "exact", network: config.tuple.network, payTo: config.tuple.payTo, price: config.runtimePrice };
   assertApprovedRequirements(config, await resourceServer.buildPaymentRequirements(resourceConfig));
   const routes = {

@@ -62,6 +62,29 @@ test("Given blocked payment config, when construction is attempted, then no SDK 
   assert.equal(constructions, 0);
 });
 
+test("Given a hung facilitator startup probe, when its startup deadline expires, then construction fails closed and aborts the probe", async () => {
+  // Given
+  let aborted = false;
+  const stalled = {
+    getSupported: ({ signal } = {}) => new Promise((_, reject) => {
+      signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(signal.reason);
+      }, { once: true });
+    }),
+  };
+
+  // When
+  const pending = createX402Payment({
+    config: approved(), facilitatorClient: stalled, journal: {},
+    now: "2026-07-11T00:00:00.000Z", startupTimeoutMs: 20,
+  });
+
+  // Then
+  await assert.rejects(pending, { name: "TimeoutError", message: "getSupported deadline exceeded" });
+  assert.equal(aborted, true);
+});
+
 test("Given the real payment readiness file, when inspected, then it remains blocked without an asset choice", async () => {
   const config = JSON.parse(await readFile(new URL("../readiness/payment.json", import.meta.url), "utf8"));
   assert.equal(config.status, "pending");

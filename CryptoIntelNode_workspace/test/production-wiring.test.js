@@ -112,6 +112,8 @@ test("approved API wiring uses real injected source, risk, journal and x402 inst
   const runtime = await createApiRuntime({
     env: {
       CRYPTO_INTEL_STATE_DIR: "/tmp/crypto-intel-wiring-api",
+      CRYPTO_INTEL_PAYMENT_TIMEOUT_MS: "11000",
+      CRYPTO_INTEL_PAYMENT_STARTUP_TIMEOUT_MS: "7000",
       OKX_API_KEY: "fixture-key", OKX_SECRET_KEY: "fixture-secret", OKX_PASSPHRASE: "fixture-passphrase",
     },
     readReadiness: readApproved(readiness),
@@ -132,7 +134,8 @@ test("approved API wiring uses real injected source, risk, journal and x402 inst
   assert.deepEqual(observed.journal, { stateDir: "/tmp/crypto-intel-wiring-api" });
   assert.equal(observed.payment.journal, journal);
   assert.equal(observed.payment.facilitatorClient, facilitator);
-  assert.equal(observed.payment.timeoutMs, 10_000);
+  assert.equal(observed.payment.timeoutMs, 11_000);
+  assert.equal(observed.payment.startupTimeoutMs, 7_000);
   assert.equal(observed.app.riskService, riskService);
   assert.equal(observed.app.paymentMiddleware, paymentMiddleware);
   assert.deepEqual(await observed.app.gateReader(), {

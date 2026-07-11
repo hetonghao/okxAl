@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { settledSuccessfully, storedSuccessResponse } from "./payment-journal-settlement.js";
+import { isStoredSuccessResponse, settledSuccessfully, storedSuccessResponse } from "./payment-journal-settlement.js";
 
 const HASH = /^[a-f0-9]{64}$/;
 const STATES = new Set(["prepared", "settled", "reconciliation_required"]);
@@ -58,7 +58,7 @@ function validateState(value, paymentHeaderHash, requestHash) {
     || value.paymentHeaderHash !== paymentHeaderHash || value.requestHash !== requestHash
     || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string"
   ) throw new PaymentReconciliationError("invalid payment journal state");
-  if (value.status === "settled" && (!value.response || value.response.status < 200 || value.response.status >= 300)) {
+  if (value.status !== "reconciliation_required" && !isStoredSuccessResponse(value.response)) {
     throw new PaymentReconciliationError("invalid settled response");
   }
   return value;

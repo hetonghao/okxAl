@@ -9,6 +9,7 @@ import {
   PaymentReconciliationError,
   createPaymentJournal,
 } from "../src/payment-journal.js";
+import { storedSuccessResponse } from "../src/payment-journal-settlement.js";
 
 const request = {
   method: "POST",
@@ -211,6 +212,44 @@ test("Given an unknown or truncated state, when read, then it fails closed", asy
   const { directory } = journal.identify(paymentHeader, request);
   await writeFile(join(directory, "state.json"), "{truncated", "utf8");
   await assert.rejects(run(createPaymentJournal({ stateDir: journal.stateDir })), PaymentReconciliationError);
+});
+
+for (const [name, corrupt] of [
+  ["missing body", (value) => ({ ...value, response: { status: 200 } })],
+  ["wrong field type", (value) => ({
+    ...value,
+    response: { ...value.response, body: { ...value.response.body, schemaVersion: 1 } },
+  })],
+]) {
+  test(`Given a settled response with ${name}, when read, then readiness and replay fail closed`, async (context) => {
+    const { journal } = await fixture(context);
+    await run(journal);
+    const { directory } = journal.identify(paymentHeader, request);
+    const path = join(directory, "state.json");
+    const value = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, `${JSON.stringify(corrupt(value))}\n`, "utf8");
+
+    assert.deepEqual(await journal.readiness(), { status: 503, blockers: ["journal-unavailable"] });
+    await assert.rejects(journal.replay(paymentHeader, request), PaymentReconciliationError);
+  });
+}
+
+test("Given accessors or inherited response fields, when storing success, then no untrusted value is executed or accepted", () => {
+  let getterCalls = 0;
+  const accessor = Object.create(response);
+  Object.defineProperty(accessor, "status", {
+    enumerable: true,
+    get() { getterCalls += 1; return 200; },
+  });
+
+  assert.throws(() => storedSuccessResponse(accessor), TypeError);
+  assert.equal(getterCalls, 0);
+  assert.throws(() => storedSuccessResponse(Object.create(response)), TypeError);
+
+  const evidence = [...response.body.evidence];
+  Object.defineProperty(evidence, "0", { get() { getterCalls += 1; return response.body.evidence[0]; } });
+  assert.throws(() => storedSuccessResponse({ ...response, body: { ...response.body, evidence } }), TypeError);
+  assert.equal(getterCalls, 0);
 });
 
 test("Given settlement reports failure, when executed, then success is withheld and the payment is reconciled", async (context) => {

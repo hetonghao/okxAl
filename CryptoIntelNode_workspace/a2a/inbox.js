@@ -1,22 +1,22 @@
 import * as fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { atomicPublish, recoverAtomicPublishes, syncDirectory } from "./state-io.js";
+import { createInboxLocks } from "./inbox-lock.js";
 
 const JOB_ID = /^0x[0-9a-f]{64}$/;
 const MAX_JOBS = 100;
 const MAX_SENDER_JOBS = 10;
 const MAX_REQUEST_BYTES = 4096;
 const DEFAULT_STALE_MS = 15 * 60 * 1000;
-const LOCK_STALE_MS = 30 * 1000;
 const LOCAL_LOCKS = new Map();
-
-const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DEFAULT_STALE_MS } = {}) {
   const root = join(stateDir, "a2a-inbox");
   const capacityLock = join(root, ".capacity-lock");
+  const commitLock = join(root, ".capacity-commit-lock");
+  const locks = createInboxLocks({ io });
   let initialized = false;
   let lastSweepAt = Number.NEGATIVE_INFINITY;
 
@@ -28,6 +28,8 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
   async function initialize() {
     if (initialized) return;
     await io.mkdir(root, { recursive: true, mode: 0o700 });
+    await locks.recoverTombstones(capacityLock);
+    await locks.recoverTombstones(commitLock);
     await recoverAtomicPublishes(root, JOB_ID, io);
     initialized = true;
   }
@@ -39,99 +41,6 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
     return JSON.parse(await io.readFile(path, "utf8"));
   }
 
-  async function lockOwner(path) {
-    return io.readFile(join(path, "owner.json"), "utf8").then(JSON.parse, () => null);
-  }
-
-  async function writeLockOwner(path, token) {
-    const handle = await io.open(join(path, "owner.json"), "wx", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify({ token })}\n`);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  }
-
-  async function restoreLock(tombstone, path) {
-    for (;;) {
-      try {
-        await io.rename(tombstone, path);
-        return;
-      } catch (error) {
-        if (error.code === "ENOENT") return;
-        if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
-        await pause(1);
-      }
-    }
-  }
-
-  async function releaseLock(path, token) {
-    const tombstone = `${path}.swap-${randomUUID()}`;
-    try {
-      await io.rename(path, tombstone);
-    } catch (error) {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    }
-    const owner = await lockOwner(tombstone);
-    if (owner?.token !== token) {
-      await restoreLock(tombstone, path);
-      return false;
-    }
-    await io.rm(tombstone, { recursive: true, force: true });
-    await syncDirectory(dirname(path), io);
-    return true;
-  }
-
-  async function hasTombstone(path) {
-    const prefix = `${basename(path)}.swap-`;
-    return (await io.readdir(dirname(path))).some((name) => name.startsWith(prefix));
-  }
-
-  async function removeStaleLock(path) {
-    const observed = await lockOwner(path);
-    const age = Date.now() - await io.stat(path).then((value) => value.mtimeMs, () => Date.now());
-    if (age < LOCK_STALE_MS) return false;
-    const tombstone = `${path}.swap-${randomUUID()}`;
-    try {
-      await io.rename(path, tombstone);
-    } catch (error) {
-      if (error.code === "ENOENT") return true;
-      throw error;
-    }
-    const moved = await lockOwner(tombstone);
-    if (moved?.token !== observed?.token) {
-      await restoreLock(tombstone, path);
-      return false;
-    }
-    await io.rm(tombstone, { recursive: true, force: true });
-    await syncDirectory(dirname(path), io);
-    return true;
-  }
-
-  async function acquireLock(path, wait = true) {
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const token = randomUUID();
-      try {
-        await io.mkdir(path, { mode: 0o700 });
-        await writeLockOwner(path, token);
-        await syncDirectory(path, io);
-        await syncDirectory(dirname(path), io);
-        if (!await hasTombstone(path)) return token;
-        await releaseLock(path, token);
-      } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-        if (!await removeStaleLock(path)) {
-          if (!wait) return false;
-          await pause(2);
-        }
-      }
-    }
-    throw new Error("inbox lock timeout");
-  }
-
   async function withCapacityLock(operation) {
     const previous = LOCAL_LOCKS.get(root) ?? Promise.resolve();
     let releaseLocal;
@@ -140,16 +49,28 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
     await previous;
     try {
       await initialize();
-      const token = await acquireLock(capacityLock);
+      const token = await locks.acquire(capacityLock);
       try {
-        return await operation();
+        return await operation(token);
       } finally {
-        await releaseLock(capacityLock, token);
+        await locks.release(capacityLock, token);
       }
     } finally {
       releaseLocal();
       if (LOCAL_LOCKS.get(root) === current) LOCAL_LOCKS.delete(root);
     }
+  }
+
+  async function capacityDecision(senderAgentId) {
+    const entries = (await io.readdir(root, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && JOB_ID.test(entry.name));
+    if (entries.length >= MAX_JOBS && now() - lastSweepAt < Math.min(staleMs, 1000)) return "blocked-capacity";
+    const markers = await activeMarkers(entries);
+    if (markers.length >= MAX_JOBS) return "blocked-capacity";
+    if (markers.filter((marker) => marker.senderAgentId === senderAgentId).length >= MAX_SENDER_JOBS) {
+      return "blocked-sender-capacity";
+    }
+    return null;
   }
 
   async function activeMarkers(entries) {
@@ -198,30 +119,34 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
   async function claim(jobId, request, senderAgentId, requestDigest) {
     const serialized = `${JSON.stringify(request)}\n`;
     if (Buffer.byteLength(serialized) > MAX_REQUEST_BYTES) return { status: "blocked-capacity" };
-    return withCapacityLock(async () => {
+    return withCapacityLock(async (capacityToken) => {
       const existing = await existingClaim(jobId, senderAgentId, requestDigest);
       if (existing) return existing;
-      const entries = (await io.readdir(root, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory() && JOB_ID.test(entry.name));
-      if (entries.length >= MAX_JOBS && now() - lastSweepAt < Math.min(staleMs, 1000)) {
-        return { status: "blocked-capacity" };
-      }
-      const markers = await activeMarkers(entries);
-      if (markers.length >= MAX_JOBS) return { status: "blocked-capacity" };
-      if (markers.filter((marker) => marker.senderAgentId === senderAgentId).length >= MAX_SENDER_JOBS) {
-        return { status: "blocked-sender-capacity" };
-      }
-      const directory = jobPath(jobId);
-      await io.mkdir(directory, { mode: 0o700 });
+      const decision = await capacityDecision(senderAgentId);
+      if (decision) return { status: decision };
+      const staging = join(root, `.claim-${randomUUID()}`);
+      await io.mkdir(staging, { mode: 0o700 });
       try {
-        await atomicPublish(jobPath(jobId, "request.json"), serialized, io);
+        await atomicPublish(join(staging, "request.json"), serialized, io);
         const marker = { status: "claimed", senderAgentId, requestDigest, createdAt: now() };
-        await atomicPublish(jobPath(jobId, "message.json"), `${JSON.stringify(marker)}\n`, io);
-        await syncDirectory(root, io);
-        return { status: "claimed" };
+        await atomicPublish(join(staging, "message.json"), `${JSON.stringify(marker)}\n`, io);
+        const commitToken = await locks.acquire(commitLock, { expiring: false });
+        try {
+          if (!await locks.owns(capacityLock, capacityToken)) return { status: "blocked-capacity" };
+          const repeated = await existingClaim(jobId, senderAgentId, requestDigest);
+          if (repeated) return repeated;
+          const finalDecision = await capacityDecision(senderAgentId);
+          if (finalDecision) return { status: finalDecision };
+          await io.rename(staging, jobPath(jobId));
+          await syncDirectory(root, io);
+          return { status: "claimed" };
+        } finally {
+          await locks.release(commitLock, commitToken);
+        }
       } catch (error) {
-        if (io.rm) await io.rm(directory, { recursive: true, force: true });
         throw error;
+      } finally {
+        await io.rm(staging, { recursive: true, force: true });
       }
     });
   }
@@ -235,17 +160,17 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
       if (error.code !== "ENOENT") throw error;
     }
     const lock = jobPath(jobId, ".ack-lock");
-    return acquireLock(lock, false);
+    return locks.acquire(lock, { wait: false });
   }
 
   async function finishAck(jobId, token, acknowledged) {
     const lock = jobPath(jobId, ".ack-lock");
     try {
-      if (acknowledged && (await lockOwner(lock))?.token === token) {
+      if (acknowledged && await locks.owns(lock, token)) {
         await atomicPublish(jobPath(jobId, "acknowledged.json"), `${JSON.stringify({ status: "acknowledged", createdAt: now() })}\n`, io);
       }
     } finally {
-      await releaseLock(lock, token);
+      await locks.release(lock, token);
       await syncDirectory(jobPath(jobId), io);
     }
   }

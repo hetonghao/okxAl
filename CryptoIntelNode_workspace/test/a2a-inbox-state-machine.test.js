@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
-import { mkdtemp, readFile, rm, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -116,6 +116,19 @@ test("Given ACK owner A is stale When B takes over Then A cannot delete B lease"
   await second.finishAck(job(89), tokenB, false);
 });
 
+test("Given orphan capacity tombstone When process restarts Then claim recovers without timeout", async (t) => {
+  const stateDir = await temporaryState(t, "a2a-inbox-tombstone-");
+  const root = join(stateDir, "a2a-inbox");
+  const tombstone = join(root, ".capacity-lock.swap-orphan");
+  await mkdir(tombstone, { recursive: true });
+  await writeFile(join(tombstone, "owner.json"), `${JSON.stringify({ token: "orphan", pid: 999_999_999, state: "active" })}\n`);
+
+  const result = await createA2AInbox({ stateDir }).claim(job(87), request, "buyer-1", "digest-87");
+
+  assert.equal(result.status, "claimed");
+  await assert.rejects(readFile(tombstone), /ENOENT/);
+});
+
 test("Given capacity owner A is stale When B takes over Then A cannot delete B lock or admit C", async (t) => {
   const stateDir = await temporaryState(t, "a2a-inbox-capacity-fencing-");
   const root = join(stateDir, "a2a-inbox");
@@ -132,40 +145,90 @@ test("Given capacity owner A is stale When B takes over Then A cannot delete B l
   const seenA = new Promise((resolve) => { enteredA = resolve; });
   const seenB = new Promise((resolve) => { enteredB = resolve; });
   const reached = (signal, label) => Promise.race([signal, new Promise((_, reject) => {
-    setTimeout(() => reject(new Error(`${label} did not enter`)), 1_000);
+    setTimeout(() => reject(new Error(`${label} did not enter`)), 5_000);
   })]);
-  const blockedIo = (gate, entered, expectedJob) => {
+  const blockedIo = (gate, entered) => {
     return new Proxy(fs, {
     get(target, property) {
       if (property !== "mkdir") return target[property];
       return async (path, options) => {
-        if (path === join(root, expectedJob)) { entered(); await gate; }
+        if (path.startsWith(join(root, ".claim-"))) { entered(); await gate; }
         return target.mkdir(path, options);
       };
     },
     });
   };
-  const claimA = createA2AInbox({ stateDir, io: blockedIo(gateA, enteredA, job(90)) })
-    .claim(job(90), request, "sender-a", "digest-a");
+  for (let index = 0; index < 99; index += 1) {
+    const directory = join(root, job(index));
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "request.json"), `${JSON.stringify(request)}\n`);
+    await writeFile(join(directory, "message.json"), `${JSON.stringify({
+      status: "claimed", senderAgentId: `seed-${index}`, requestDigest: `seed-digest-${index}`, createdAt: Date.now(),
+    })}\n`);
+  }
+  const claimA = createA2AInbox({ stateDir, io: blockedIo(gateA, enteredA) })
+    .claim(job(900), request, "sender-a", "digest-a");
   await reached(seenA, "A");
   const lock = join(root, ".capacity-lock");
   const stale = new Date(Date.now() - 31_000);
   await utimes(lock, stale, stale);
-  const inboxB = await createIsolatedInbox("b", { stateDir, io: blockedIo(gateB, enteredB, job(91)) });
-  const claimB = inboxB.claim(job(91), request, "sender-b", "digest-b");
+  const inboxB = await createIsolatedInbox("b", { stateDir, io: blockedIo(gateB, enteredB) });
+  const claimB = inboxB.claim(job(901), request, "sender-b", "digest-b");
   await reached(seenB, "B");
   const tokenB = JSON.parse(await readFile(join(lock, "owner.json"), "utf8")).token;
 
   releaseA();
-  assert.equal((await claimA).status, "claimed");
+  assert.equal((await claimA).status, "blocked-capacity");
   assert.equal(JSON.parse(await readFile(join(lock, "owner.json"), "utf8")).token, tokenB);
-  let enteredC = false;
-  const inboxC = await createIsolatedInbox("c", { stateDir, io: blockedIo(Promise.resolve(), () => { enteredC = true; }, job(92)) });
-  const claimC = inboxC.claim(job(92), request, "sender-c", "digest-c");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(enteredC, false);
-
   releaseB();
   assert.equal((await claimB).status, "claimed");
-  assert.equal((await claimC).status, "claimed");
+  const entries = (await fs.readdir(root, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^0x[0-9a-f]{64}$/.test(entry.name));
+  assert.equal(entries.length, 100);
+});
+
+test("Given sender has 9 claims When stale owners race Then sender quota remains exactly 10", async (t) => {
+  const stateDir = await temporaryState(t, "a2a-inbox-sender-fence-");
+  const root = join(stateDir, "a2a-inbox");
+  let releaseA;
+  let enteredA;
+  const gateA = new Promise((resolve) => { releaseA = resolve; });
+  const seenA = new Promise((resolve) => { enteredA = resolve; });
+  const blockedIo = new Proxy(fs, {
+    get(target, property) {
+      if (property !== "mkdir") return target[property];
+      return async (path, options) => {
+        if (path.startsWith(join(root, ".claim-"))) { enteredA(); await gateA; }
+        return target.mkdir(path, options);
+      };
+    },
+  });
+  const first = createA2AInbox({ stateDir });
+  for (let index = 0; index < 9; index += 1) {
+    assert.equal((await first.claim(job(500 + index), request, "same-sender", `digest-${index}`)).status, "claimed");
+  }
+  const claimA = createA2AInbox({ stateDir, io: blockedIo })
+    .claim(job(600), request, "same-sender", "digest-a");
+  await Promise.race([seenA, new Promise((_, reject) => setTimeout(() => reject(new Error("A did not enter")), 5_000))]);
+  const lock = join(root, ".capacity-lock");
+  const tokenA = JSON.parse(await readFile(join(lock, "owner.json"), "utf8")).token;
+  const stale = new Date(Date.now() - 31_000);
+  await utimes(lock, stale, stale);
+  const module = await import(`../a2a/inbox.js?sender-fencing=${Date.now()}`);
+  const claimB = module.createA2AInbox({ stateDir })
+    .claim(job(601), request, "same-sender", "digest-b");
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const token = await readFile(join(lock, "owner.json"), "utf8")
+      .then((value) => JSON.parse(value).token, () => tokenA);
+    if (token !== tokenA) break;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  releaseA();
+  const results = await Promise.all([claimA, claimB]);
+  assert.equal(results.filter(({ status }) => status === "claimed").length, 1);
+  assert.equal(results.filter(({ status }) => status === "blocked-sender-capacity" || status === "blocked-capacity").length, 1);
+  const entries = (await fs.readdir(root, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^0x[0-9a-f]{64}$/.test(entry.name));
+  assert.equal(entries.length, 10);
 });

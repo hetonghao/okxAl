@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, utimes } from "node:fs/promises";
+import * as fs from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -86,11 +87,85 @@ test("Given process crashes while holding ACK lease When lease is stale Then res
   const stateDir = await temporaryState(t, "a2a-inbox-ack-crash-");
   const inbox = createA2AInbox({ stateDir });
   assert.equal((await inbox.claim(job(88), request, "buyer-1", "digest-88")).status, "claimed");
-  assert.equal(await inbox.beginAck(job(88)), true);
+  const abandoned = await inbox.beginAck(job(88));
+  assert.equal(typeof abandoned, "string");
   const stale = new Date(Date.now() - 31_000);
   await utimes(join(stateDir, "a2a-inbox", job(88), ".ack-lock"), stale, stale);
   const restarted = createA2AInbox({ stateDir });
-  assert.equal(await restarted.beginAck(job(88)), true);
-  await restarted.finishAck(job(88), true);
+  const recovered = await restarted.beginAck(job(88));
+  assert.equal(typeof recovered, "string");
+  await restarted.finishAck(job(88), recovered, true);
   assert.equal((await restarted.claim(job(88), request, "buyer-1", "digest-88")).status, "duplicate");
+});
+
+test("Given ACK owner A is stale When B takes over Then A cannot delete B lease", async (t) => {
+  const stateDir = await temporaryState(t, "a2a-inbox-ack-fencing-");
+  const first = createA2AInbox({ stateDir });
+  assert.equal((await first.claim(job(89), request, "buyer-1", "digest-89")).status, "claimed");
+  const tokenA = await first.beginAck(job(89));
+  const lock = join(stateDir, "a2a-inbox", job(89), ".ack-lock");
+  const stale = new Date(Date.now() - 31_000);
+  await utimes(lock, stale, stale);
+  const second = createA2AInbox({ stateDir });
+  const tokenB = await second.beginAck(job(89));
+
+  await first.finishAck(job(89), tokenA, false);
+
+  assert.equal(JSON.parse(await readFile(join(lock, "owner.json"), "utf8")).token, tokenB);
+  assert.equal(await createA2AInbox({ stateDir }).beginAck(job(89)), false);
+  await second.finishAck(job(89), tokenB, false);
+});
+
+test("Given capacity owner A is stale When B takes over Then A cannot delete B lock or admit C", async (t) => {
+  const stateDir = await temporaryState(t, "a2a-inbox-capacity-fencing-");
+  const root = join(stateDir, "a2a-inbox");
+  const createIsolatedInbox = async (name, options) => {
+    const module = await import(`../a2a/inbox.js?fencing=${name}-${Date.now()}`);
+    return module.createA2AInbox(options);
+  };
+  let releaseA;
+  let releaseB;
+  let enteredA;
+  let enteredB;
+  const gateA = new Promise((resolve) => { releaseA = resolve; });
+  const gateB = new Promise((resolve) => { releaseB = resolve; });
+  const seenA = new Promise((resolve) => { enteredA = resolve; });
+  const seenB = new Promise((resolve) => { enteredB = resolve; });
+  const reached = (signal, label) => Promise.race([signal, new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(`${label} did not enter`)), 1_000);
+  })]);
+  const blockedIo = (gate, entered, expectedJob) => {
+    return new Proxy(fs, {
+    get(target, property) {
+      if (property !== "mkdir") return target[property];
+      return async (path, options) => {
+        if (path === join(root, expectedJob)) { entered(); await gate; }
+        return target.mkdir(path, options);
+      };
+    },
+    });
+  };
+  const claimA = createA2AInbox({ stateDir, io: blockedIo(gateA, enteredA, job(90)) })
+    .claim(job(90), request, "sender-a", "digest-a");
+  await reached(seenA, "A");
+  const lock = join(root, ".capacity-lock");
+  const stale = new Date(Date.now() - 31_000);
+  await utimes(lock, stale, stale);
+  const inboxB = await createIsolatedInbox("b", { stateDir, io: blockedIo(gateB, enteredB, job(91)) });
+  const claimB = inboxB.claim(job(91), request, "sender-b", "digest-b");
+  await reached(seenB, "B");
+  const tokenB = JSON.parse(await readFile(join(lock, "owner.json"), "utf8")).token;
+
+  releaseA();
+  assert.equal((await claimA).status, "claimed");
+  assert.equal(JSON.parse(await readFile(join(lock, "owner.json"), "utf8")).token, tokenB);
+  let enteredC = false;
+  const inboxC = await createIsolatedInbox("c", { stateDir, io: blockedIo(Promise.resolve(), () => { enteredC = true; }, job(92)) });
+  const claimC = inboxC.claim(job(92), request, "sender-c", "digest-c");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(enteredC, false);
+
+  releaseB();
+  assert.equal((await claimB).status, "claimed");
+  assert.equal((await claimC).status, "claimed");
 });

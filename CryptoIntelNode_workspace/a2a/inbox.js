@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { basename, dirname, join } from "node:path";
 
 import { atomicPublish, recoverAtomicPublishes, syncDirectory } from "./state-io.js";
 
@@ -38,26 +39,97 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
     return JSON.parse(await io.readFile(path, "utf8"));
   }
 
-  async function removeStaleLock(path) {
-    const age = Date.now() - await io.stat(path).then((value) => value.mtimeMs, () => Date.now());
-    if (age < LOCK_STALE_MS) return false;
-    await io.rm(path, { recursive: true, force: true });
-    await syncDirectory(path.slice(0, path.lastIndexOf("/")), io);
+  async function lockOwner(path) {
+    return io.readFile(join(path, "owner.json"), "utf8").then(JSON.parse, () => null);
+  }
+
+  async function writeLockOwner(path, token) {
+    const handle = await io.open(join(path, "owner.json"), "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify({ token })}\n`);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async function restoreLock(tombstone, path) {
+    for (;;) {
+      try {
+        await io.rename(tombstone, path);
+        return;
+      } catch (error) {
+        if (error.code === "ENOENT") return;
+        if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
+        await pause(1);
+      }
+    }
+  }
+
+  async function releaseLock(path, token) {
+    const tombstone = `${path}.swap-${randomUUID()}`;
+    try {
+      await io.rename(path, tombstone);
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+    const owner = await lockOwner(tombstone);
+    if (owner?.token !== token) {
+      await restoreLock(tombstone, path);
+      return false;
+    }
+    await io.rm(tombstone, { recursive: true, force: true });
+    await syncDirectory(dirname(path), io);
     return true;
   }
 
-  async function acquireCapacityLock() {
+  async function hasTombstone(path) {
+    const prefix = `${basename(path)}.swap-`;
+    return (await io.readdir(dirname(path))).some((name) => name.startsWith(prefix));
+  }
+
+  async function removeStaleLock(path) {
+    const observed = await lockOwner(path);
+    const age = Date.now() - await io.stat(path).then((value) => value.mtimeMs, () => Date.now());
+    if (age < LOCK_STALE_MS) return false;
+    const tombstone = `${path}.swap-${randomUUID()}`;
+    try {
+      await io.rename(path, tombstone);
+    } catch (error) {
+      if (error.code === "ENOENT") return true;
+      throw error;
+    }
+    const moved = await lockOwner(tombstone);
+    if (moved?.token !== observed?.token) {
+      await restoreLock(tombstone, path);
+      return false;
+    }
+    await io.rm(tombstone, { recursive: true, force: true });
+    await syncDirectory(dirname(path), io);
+    return true;
+  }
+
+  async function acquireLock(path, wait = true) {
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
+      const token = randomUUID();
       try {
-        await io.mkdir(capacityLock, { mode: 0o700 });
-        return;
+        await io.mkdir(path, { mode: 0o700 });
+        await writeLockOwner(path, token);
+        await syncDirectory(path, io);
+        await syncDirectory(dirname(path), io);
+        if (!await hasTombstone(path)) return token;
+        await releaseLock(path, token);
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
-        if (!await removeStaleLock(capacityLock)) await pause(2);
+        if (!await removeStaleLock(path)) {
+          if (!wait) return false;
+          await pause(2);
+        }
       }
     }
-    throw new Error("inbox capacity lock timeout");
+    throw new Error("inbox lock timeout");
   }
 
   async function withCapacityLock(operation) {
@@ -68,11 +140,11 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
     await previous;
     try {
       await initialize();
-      await acquireCapacityLock();
+      const token = await acquireLock(capacityLock);
       try {
         return await operation();
       } finally {
-        if (io.rm) await io.rm(capacityLock, { recursive: true, force: true });
+        await releaseLock(capacityLock, token);
       }
     } finally {
       releaseLocal();
@@ -163,27 +235,17 @@ export function createA2AInbox({ stateDir, io = fs, now = Date.now, staleMs = DE
       if (error.code !== "ENOENT") throw error;
     }
     const lock = jobPath(jobId, ".ack-lock");
-    try {
-      await io.mkdir(lock, { mode: 0o700 });
-      await syncDirectory(jobPath(jobId), io);
-      return true;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      if (!await removeStaleLock(lock)) return false;
-      await io.mkdir(lock, { mode: 0o700 });
-      await syncDirectory(jobPath(jobId), io);
-      return true;
-    }
+    return acquireLock(lock, false);
   }
 
-  async function finishAck(jobId, acknowledged) {
+  async function finishAck(jobId, token, acknowledged) {
     const lock = jobPath(jobId, ".ack-lock");
     try {
-      if (acknowledged) {
+      if (acknowledged && (await lockOwner(lock))?.token === token) {
         await atomicPublish(jobPath(jobId, "acknowledged.json"), `${JSON.stringify({ status: "acknowledged", createdAt: now() })}\n`, io);
       }
     } finally {
-      await io.rm(lock, { recursive: true, force: true });
+      await releaseLock(lock, token);
       await syncDirectory(jobPath(jobId), io);
     }
   }

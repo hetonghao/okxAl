@@ -96,6 +96,60 @@ test("Given a paid success, when it settles, then it is durable and replayed wit
   assert.match(contents[0], /"status":"settled"/);
 });
 
+test("Given a new payment identity, when the process crashes, then its parent directory entry is durable before settlement", async (context) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "crypto-payment-parent-sync-"));
+  context.after(() => rm(stateDir, { recursive: true, force: true }));
+  const root = join(stateDir, "http", "results");
+  const events = [];
+  let identityDirectory;
+  let identityDurable = false;
+  let settlements = 0;
+  const io = {
+    ...fs,
+    mkdir: async (path, options) => {
+      events.push(`mkdir:${path}`);
+      const result = await fs.mkdir(path, options);
+      if (path.startsWith(`${root}/`)) identityDirectory = path;
+      return result;
+    },
+    open: async (path, ...args) => {
+      events.push(`open:${path}`);
+      const handle = await fs.open(path, ...args);
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        events.push(`sync:${path}`);
+        if (path === root) identityDurable = true;
+        return sync();
+      };
+      return handle;
+    },
+    rename: async (source, target) => {
+      events.push(`rename:${source}->${target}`);
+      return fs.rename(source, target);
+    },
+  };
+  const execute = (journal) => journal.execute({
+    paymentHeader,
+    request,
+    response,
+    expectedSettlement: approvedSettlement,
+    settle: async () => { settlements += 1; return settlementSuccess; },
+    flush: async () => {},
+  });
+
+  const firstJournal = createPaymentJournal({ stateDir, io });
+  identityDirectory = firstJournal.identify(paymentHeader, request).directory;
+  await execute(firstJournal);
+  if (!identityDurable) await rm(identityDirectory, { recursive: true, force: true });
+  await execute(createPaymentJournal({ stateDir }));
+
+  assert.equal(settlements, 1, `crash lost an unsynced identity and settled twice; events=${events.join(" | ")}`);
+  const identityMkdir = events.indexOf(`mkdir:${identityDirectory}`);
+  const rootSync = events.indexOf(`sync:${root}`);
+  const preparedRename = events.findIndex((event) => event.includes("rename:") && event.endsWith("state.json"));
+  assert.ok(identityMkdir >= 0 && identityMkdir < rootSync && rootSync < preparedRename, events.join(" | "));
+});
+
 test("Given secrets inside a successful body, when persisted, then only public response fields reach disk", async (context) => {
   const { stateDir, journal } = await fixture(context);
   const secrets = ["api-key-secret", "cookie-secret", "wallet-secret", "session-secret"];
@@ -131,7 +185,7 @@ for (const failure of ["file.sync", "rename", "parent.sync"]) {
           const sync = handle.sync.bind(handle);
           handle.sync = async () => { if (++syncs === 2) throw new Error(failure); return sync(); };
         }
-        if (failure === "parent.sync" && !path.endsWith(".tmp")) {
+        if (failure === "parent.sync" && /[a-f0-9]{64}$/.test(path)) {
           const sync = handle.sync.bind(handle);
           handle.sync = async () => { if (++syncs === 2) throw new Error(failure); return sync(); };
         }
@@ -147,6 +201,31 @@ for (const failure of ["file.sync", "rename", "parent.sync"]) {
     await assert.rejects(run(createPaymentJournal({ stateDir })), PaymentReconciliationError);
   });
 }
+
+test("Given the identity parent sync fails, when persistence starts, then settlement and success fail closed", async (context) => {
+  let settlements = 0;
+  let flushes = 0;
+  const { stateDir, journal } = await fixture(context, {
+    io: {
+      ...fs,
+      open: async (path, ...args) => {
+        const handle = await fs.open(path, ...args);
+        if (path === join(stateDir, "http", "results")) {
+          handle.sync = async () => { throw new Error("identity parent sync"); };
+        }
+        return handle;
+      },
+    },
+  });
+
+  await assert.rejects(run(journal, {
+    settle: async () => { settlements += 1; return settlementSuccess; },
+    flush: async () => { flushes += 1; },
+  }), /identity parent sync/);
+  assert.equal(settlements, 0);
+  assert.equal(flushes, 0);
+  await assert.rejects(stat(journal.identify(paymentHeader, request).directory), { code: "ENOENT" });
+});
 
 for (const point of ["afterValidate", "beforePreparedWrite"]) {
   test(`Given a crash ${point}, when retried, then no payment state or duplicate charge exists`, async (context) => {

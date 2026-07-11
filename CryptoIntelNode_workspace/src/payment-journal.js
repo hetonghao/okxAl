@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -9,6 +9,7 @@ import {
   settlementContextMatches,
   storedSuccessResponse,
 } from "./payment-journal-settlement.js";
+import { durableMkdir, durableWrite } from "./payment-journal-io.js";
 
 const HASH = /^[a-f0-9]{64}$/;
 const STATES = new Set(["prepared", "settled", "reconciliation_required"]);
@@ -35,28 +36,6 @@ function digest(value) {
   return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(stable(value))).digest("hex");
 }
 
-async function durableWrite(directory, value, io) {
-  const target = join(directory, "state.json");
-  const temporary = join(directory, `.state-${randomUUID()}.tmp`);
-  const file = await io.open(temporary, "wx", 0o600);
-  try {
-    await file.writeFile(`${JSON.stringify(value)}\n`, "utf8");
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  await io.rename(temporary, target);
-  const parent = await io.open(directory, "r");
-  try {
-    await parent.sync();
-  } catch (error) {
-    await io.rm(target, { force: true }).catch(() => {});
-    throw error;
-  } finally {
-    await parent.close();
-  }
-}
-
 function validateState(value, paymentHeaderHash, requestHash) {
   const createdAt = Date.parse(value?.createdAt);
   const updatedAt = Date.parse(value?.updatedAt);
@@ -75,7 +54,8 @@ function validateState(value, paymentHeaderHash, requestHash) {
 export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE_DIR, now = Date.now, ttlMs = DEFAULT_TTL_MS, io = fs } = {}) {
   if (!stateDir) throw new TypeError("stateDir is required");
   if (!Number.isInteger(ttlMs) || ttlMs <= 0) throw new TypeError("ttlMs must be a positive integer");
-  const root = join(stateDir, "http", "results");
+  const httpDirectory = join(stateDir, "http");
+  const root = join(httpDirectory, "results");
 
   function identify(paymentHeader, request) {
     if (typeof paymentHeader !== "string" || paymentHeader.length === 0) throw new TypeError("paymentHeader is required");
@@ -139,11 +119,9 @@ export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE
     const storedResponse = storedSuccessResponse(response);
 
     await fault("beforePreparedWrite");
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    try {
-      await mkdir(identity.directory, { mode: 0o700 });
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
+    await durableMkdir(httpDirectory, stateDir, io);
+    await durableMkdir(root, httpDirectory, io);
+    if (!await durableMkdir(identity.directory, root, io)) {
       const raced = await read(identity);
       if (raced?.status === "settled") {
         await flush(raced.response);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, open, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,11 +130,13 @@ test("Given terminal durable 后清理 working 前崩溃 When 重启 Then 跳过
   assert.equal((await createA2AState({ stateDir }).claimNext("stable-worker")).jobId, job(2));
 });
 
-test("Given 100 个 pending job When 再接收一个 Then 容量门拒绝", async (t) => {
+test("Given 100 个 pending job When 第 101 个被容量门拒绝 Then 不残留目录且 readiness 不误报损坏", async (t) => {
   const state = await fixture(t);
   await Promise.all(Array.from({ length: 100 }, (_, index) => accept(state, job(index + 1))));
 
   await assert.rejects(accept(state, job(101)), /pending capacity/);
+  assert.equal((await readdir(join(state.root, "jobs"))).length, 100);
+  assert.deepEqual(await state.readiness(), { status: 200, blockers: [] });
 });
 
 test("Given 101 个并发发布 When 容量竞争 Then 最多 100 个被接受", async (t) => {

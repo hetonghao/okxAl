@@ -107,7 +107,6 @@ export function createStateQueue({ root, jobs, io, now, initialize, jobPath, isJ
     await initialize();
     if (await directorySize(root, io) + incomingBytes >= MAX_SPOOL_BYTES) throw new Error("spool capacity exceeded");
     const directory = jobPath(jobId);
-    await io.mkdir(directory, { recursive: true, mode: 0o700 });
     const ready = join(directory, "ready");
     const alreadyAccepted = await io.lstat(join(directory, "accepted.json")).then(() => true, () => false);
     if (!alreadyAccepted && await pendingCount() >= MAX_PENDING) throw new Error("pending capacity exceeded");

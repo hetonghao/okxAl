@@ -30,6 +30,19 @@ export function createInboxLocks({ io, staleMs = 30_000 }) {
     }
   }
 
+  async function publishOwner(path, token) {
+    const staging = `${path}.init-${process.pid}-${token}`;
+    await io.mkdir(staging, { mode: 0o700 });
+    try {
+      await writeOwner(staging, token);
+      await syncDirectory(staging, io);
+      await io.rename(staging, path);
+      await syncDirectory(dirname(path), io);
+    } finally {
+      await io.rm(staging, { recursive: true, force: true });
+    }
+  }
+
   async function owns(path, token) {
     const current = await owner(path);
     return current?.state === "active" && current.token === token;
@@ -50,6 +63,21 @@ export function createInboxLocks({ io, staleMs = 30_000 }) {
     await syncDirectory(parent, io);
   }
 
+  async function recoverInitializations(path) {
+    const parent = dirname(path);
+    const prefix = `${basename(path)}.init-`;
+    let removed = false;
+    for (const name of await io.readdir(parent)) {
+      if (!name.startsWith(prefix)) continue;
+      const encodedPid = Number.parseInt(name.slice(prefix.length).split("-", 1)[0], 10);
+      const value = await owner(join(parent, name));
+      if (isAlive(encodedPid) || isAlive(value?.pid)) continue;
+      await io.rm(join(parent, name), { recursive: true, force: true });
+      removed = true;
+    }
+    if (removed) await syncDirectory(parent, io);
+  }
+
   async function release(path, token) {
     if (!await owns(path, token)) return false;
     const tombstone = `${path}.swap-${token}`;
@@ -67,9 +95,9 @@ export function createInboxLocks({ io, staleMs = 30_000 }) {
 
   async function removeAbandoned(path, expiring) {
     const observed = await owner(path);
-    if (!observed) return false;
     const age = Date.now() - await io.stat(path).then((value) => value.mtimeMs, () => Date.now());
-    if (isAlive(observed.pid) && (!expiring || age < staleMs)) return false;
+    if (!observed && age < staleMs) return false;
+    if (isAlive(observed?.pid) && (!expiring || age < staleMs)) return false;
     const tombstone = `${path}.swap-${randomUUID()}`;
     try {
       await io.rename(path, tombstone);
@@ -78,7 +106,8 @@ export function createInboxLocks({ io, staleMs = 30_000 }) {
       throw error;
     }
     const moved = await owner(tombstone);
-    if (moved?.token !== observed.token) return false;
+    if (observed && moved?.token !== observed.token) return false;
+    if (!observed && moved) return false;
     await io.rm(tombstone, { recursive: true, force: true });
     await syncDirectory(dirname(path), io);
     return true;
@@ -86,16 +115,14 @@ export function createInboxLocks({ io, staleMs = 30_000 }) {
 
   async function acquire(path, { wait = true, expiring = true } = {}) {
     const deadline = Date.now() + 15_000;
+    await recoverInitializations(path);
     while (Date.now() < deadline) {
       const token = randomUUID();
       try {
-        await io.mkdir(path, { mode: 0o700 });
-        await writeOwner(path, token);
-        await syncDirectory(path, io);
-        await syncDirectory(dirname(path), io);
+        await publishOwner(path, token);
         return token;
       } catch (error) {
-        if (error.code !== "EEXIST") throw error;
+        if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
         if (!await removeAbandoned(path, expiring)) {
           if (!wait) return false;
           await pause(2);

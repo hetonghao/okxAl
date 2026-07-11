@@ -1,0 +1,12 @@
+{
+  "scoreVersion": "risk-v1.0.0",
+  "now": "2026-07-11T00:00:00.000Z",
+  "expected": { "score": 27, "level": "medium", "confidence": 0.85 },
+  "evidence": [{
+    "source": "alpha", "observedAt": "2026-07-10T23:00:00.000Z",
+    "expiresAt": "2026-07-11T01:00:00.000Z", "graceExpiresAt": "2026-07-12T00:00:00.000Z",
+    "security": { "riskControlLevel": 2, "honeypot": false },
+    "liquidity": { "liquidityUsd": 250000 },
+    "concentration": { "concentrationLabel": "Low" }
+  }]
+}

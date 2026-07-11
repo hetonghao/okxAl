@@ -1,0 +1,28 @@
+{
+  "chains": [
+    { "network": "eip155:1", "address": "0x1111111111111111111111111111111111111111" },
+    { "network": "eip155:56", "address": "0x2222222222222222222222222222222222222222" },
+    { "network": "eip155:8453", "address": "0x3333333333333333333333333333333333333333" },
+    { "network": "eip155:42161", "address": "0x4444444444444444444444444444444444444444" },
+    { "network": "eip155:196", "address": "0x5555555555555555555555555555555555555555" }
+  ],
+  "normal": {
+    "security": { "honeypot": false, "riskControlLevel": 1 },
+    "liquidityUsd": 1250000,
+    "concentrationLabel": "Low",
+    "top10Pct": 12.5,
+    "observedAt": "2026-07-11T00:00:00.000Z",
+    "timestampOrigin": "upstream",
+    "expiresAt": "2026-07-11T01:00:00.000Z"
+  },
+  "risk": {
+    "security": { "honeypot": true, "riskControlLevel": 5 },
+    "liquidityUsd": 9000,
+    "concentrationLabel": "High",
+    "top10Pct": 88,
+    "observedAt": "2026-07-11T00:00:00.000Z",
+    "timestampOrigin": "upstream",
+    "expiresAt": "2026-07-11T01:00:00.000Z"
+  },
+  "missing": null
+}

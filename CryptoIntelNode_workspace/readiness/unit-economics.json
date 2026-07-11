@@ -1,0 +1,12 @@
+{
+  "maxSourceAttempts": 2,
+  "marginalInfraCostUsd": null,
+  "failureReserveUsd": 0.001,
+  "minimumFailureReserveRate": 0.05,
+  "minimumNetContributionUsd": 0.005,
+  "cacheHitRateAssumption": 0,
+  "status": "pending",
+  "approvedBy": null,
+  "approvedAt": null,
+  "expiresAt": null
+}

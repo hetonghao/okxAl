@@ -15,6 +15,9 @@ okxAI/
 ├── OnePunchMan_workspace/      # Agent: 一拳超人
 │   └── .agents/
 │       └── skills/             # 该 agent 独立 skill 目录
+├── CryptoIntelNode_workspace/  # Agent: Crypto Intel Node
+│   └── .agents/
+│       └── skills/             # 该 agent 独立 skill 目录
 ├── .gitignore
 └── AGENTS.md
 ```
@@ -26,6 +29,7 @@ okxAI/
 | agent 专属 skills | `{AgentName}_workspace/.agents/skills/` | 当前 agent 私有技能、提示词、工具说明放这里 |
 | 共享 skills | `.agents/skills/` | 跨 agent 复用且不含密钥的内容放这里 |
 | 一拳超人 ASP | `OnePunchMan_workspace/` | 当前首个 OKX.AI ASP 工作区 |
+| Crypto Intel Node | `CryptoIntelNode_workspace/` | EVM 代币风险评分与情报报告工作区 |
 | 长久在线运行 | 广州服务器 `/root/okxAl` | 本机是移动工作电脑，不作为 7x24 承载节点 |
 
 ## CONVENTIONS
@@ -40,7 +44,7 @@ okxAI/
 - 服务器 A2A Codex provider 使用 `scripts/okx-a2a-codex-fast.js` 兜底处理平台验证消息，其他消息再委托真实 Codex。
 
 ## CODE MAP
-当前仓库还不是代码项目，没有可索引源码入口；未发现 `.codegraph/`，因此暂不维护符号级 code map。
+根目录已存在 `.codegraph/`；新增源码后应先更新索引，再使用 CodeGraph 定位符号和调用关系。
 
 ## COMMANDS
 ```bash

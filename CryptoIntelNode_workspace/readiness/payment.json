@@ -1,0 +1,13 @@
+{
+  "apiFixedPriceUsd": 0.02,
+  "asset": "USDT0",
+  "settlementCostUsd": null,
+  "status": "pending",
+  "approvedBy": null,
+  "approvedAt": null,
+  "expiresAt": null,
+  "a2aQuote": {
+    "mode": "separate",
+    "status": "not-configured"
+  }
+}

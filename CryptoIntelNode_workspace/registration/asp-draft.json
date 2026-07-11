@@ -1,0 +1,28 @@
+{
+  "kind": "registration-candidate",
+  "cliImportable": false,
+  "notice": "不是可直接导入的 CLI manifest",
+  "agent": {
+    "name": "Crypto Intel Node",
+    "description": "为交易与研究 Agent 提供可核验、可追溯的 EVM 代币风险评分与加密资产情报报告。",
+    "preferredLanguage": "zh-CN",
+    "avatar": "assets/avatar.png"
+  },
+  "services": [
+    {
+      "serviceName": "Token Risk Score",
+      "serviceDescription": "面向交易与研究 Agent，提供 EVM 代币的安全、流动性与持仓集中度风险评分及证据摘要。\n请提供网络标识、代币合约地址和可选输出语言。",
+      "serviceType": "A2MCP",
+      "fee": "0.02"
+    },
+    {
+      "serviceName": "Crypto Intelligence Report",
+      "serviceDescription": "面向交易与研究 Agent，生成基于可核验证据的加密资产风险研究报告。\n请提供网络标识、代币合约地址、研究重点和可选输出语言。",
+      "serviceType": "A2A"
+    }
+  ],
+  "materialization": {
+    "endpointFrom": "PUBLIC_HTTPS_ENDPOINT",
+    "endpointRule": "https:// public only"
+  }
+}

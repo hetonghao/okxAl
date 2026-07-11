@@ -1,0 +1,19 @@
+{
+  "status": "blocked",
+  "liveRegistered": false,
+  "checkedAt": null,
+  "blockers": [
+    {
+      "code": "endpoint",
+      "reason": "Token Risk Score 尚无已部署且可公网访问的 HTTPS endpoint。"
+    },
+    {
+      "code": "payment-asset",
+      "reason": "0.02 USDT 的支付网络、资产合约、精度、原子金额与收款地址尚未完成具名审批。"
+    },
+    {
+      "code": "live-registration",
+      "reason": "尚未获得执行平台创建、上传头像、注册或激活的明确授权与现场证据。"
+    }
+  ]
+}

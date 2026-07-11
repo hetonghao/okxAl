@@ -1,0 +1,19 @@
+{
+  "processes": 1,
+  "admission": {
+    "active": 4,
+    "queue": 16,
+    "queueWaitMs": 500,
+    "overflowStatus": 503,
+    "retryAfterSeconds": 1
+  },
+  "source": {
+    "attempts": 2,
+    "attemptTimeoutMs": 2000,
+    "assessmentDeadlineMs": 6000,
+    "backoffMs": 200,
+    "jitterMaxMs": 100,
+    "retryAfterCapMs": 500
+  },
+  "automaticRetryDenied": ["settlement", "a2a-ack", "a2a-deliver"]
+}

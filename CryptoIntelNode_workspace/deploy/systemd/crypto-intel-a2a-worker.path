@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Crypto Intel Node A2A ready jobs
+
+[Path]
+PathExistsGlob=/home/crypto-intel/.local/state/crypto-intel-node/a2a/jobs/*/ready
+Unit=crypto-intel-a2a-worker.service
+
+[Install]
+WantedBy=multi-user.target

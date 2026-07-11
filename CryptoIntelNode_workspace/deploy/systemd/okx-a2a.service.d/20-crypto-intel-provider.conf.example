@@ -1,0 +1,3 @@
+# blocked-external：此文件仅是占位示例，不得复制、启用或据此重启服务。
+# 解除门禁前必须逐项核验：目标版本、provider 入口及其参数、Agent/Service identity。
+# 核验完成后另行生成经批准的正式 drop-in；本示例不包含可执行绑定配置。

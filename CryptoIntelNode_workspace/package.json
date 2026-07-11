@@ -10,7 +10,9 @@
     "check": "node --check test/workspace.test.js",
     "test": "node --test",
     "test:x402": "node --test test/x402-payment.test.js",
-    "readiness": "node scripts/check-gates.js"
+    "readiness": "node scripts/verify-readiness.js --level local",
+    "start:api": "node scripts/start-api.js",
+    "run:a2a-worker": "node scripts/run-a2a-worker.js"
   },
   "dependencies": {
     "@okxweb3/x402-core": "0.1.0",

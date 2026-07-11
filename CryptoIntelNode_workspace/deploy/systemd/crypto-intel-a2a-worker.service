@@ -1,0 +1,21 @@
+[Unit]
+Description=Crypto Intel Node A2A worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=crypto-intel
+Group=crypto-intel
+WorkingDirectory=/opt/crypto-intel-node/current
+EnvironmentFile=/home/crypto-intel/.config/crypto-intel-node/runtime.env
+Environment=A2A_WORKER_CONCURRENCY=1
+ExecStart=/usr/bin/node /opt/crypto-intel-node/current/scripts/run-a2a-worker.js
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/crypto-intel/.local/state/crypto-intel-node

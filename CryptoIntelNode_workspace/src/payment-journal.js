@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
+import { settledSuccessfully, storedSuccessResponse } from "./payment-journal-settlement.js";
+
 const HASH = /^[a-f0-9]{64}$/;
 const STATES = new Set(["prepared", "settled", "reconciliation_required"]);
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
@@ -50,41 +52,6 @@ async function durableWrite(directory, value, io) {
   }
 }
 
-function storedSuccessResponse(response) {
-  const body = response.body;
-  const dimension = ({ score, status }) => ({ score, status });
-  return {
-    status: response.status,
-    body: {
-      schemaVersion: body.schemaVersion,
-      scoreVersion: body.scoreVersion,
-      requestId: body.requestId,
-      asset: { network: body.asset.network, address: body.asset.address },
-      assessment: {
-        score: body.assessment.score,
-        level: body.assessment.level,
-        confidence: body.assessment.confidence,
-      },
-      dimensions: {
-        security: dimension(body.dimensions.security),
-        liquidity: dimension(body.dimensions.liquidity),
-        concentration: dimension(body.dimensions.concentration),
-      },
-      freshness: {
-        observedAt: body.freshness.observedAt,
-        expiresAt: body.freshness.expiresAt,
-        stale: body.freshness.stale,
-      },
-      evidence: body.evidence.map(({ dimension: name, source, summary, observedAt }) => ({
-        dimension: name, source, summary, observedAt,
-      })),
-      missing: [...body.missing],
-      conflicts: [...body.conflicts],
-      disclaimer: body.disclaimer,
-    },
-  };
-}
-
 function validateState(value, paymentHeaderHash, requestHash) {
   if (
     !value || value.schemaVersion !== 1 || !STATES.has(value.status)
@@ -95,13 +62,6 @@ function validateState(value, paymentHeaderHash, requestHash) {
     throw new PaymentReconciliationError("invalid settled response");
   }
   return value;
-}
-
-function settledSuccessfully(value) {
-  return value?.success === true
-    && (value.status === undefined || value.status === "success")
-    && typeof value.transaction === "string" && value.transaction.length > 0
-    && typeof value.network === "string" && value.network.length > 0;
 }
 
 export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE_DIR, now = Date.now, ttlMs = DEFAULT_TTL_MS, io = fs } = {}) {

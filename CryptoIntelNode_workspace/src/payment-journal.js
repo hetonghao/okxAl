@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
-import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -97,6 +97,13 @@ function validateState(value, paymentHeaderHash, requestHash) {
   return value;
 }
 
+function settledSuccessfully(value) {
+  return value?.success === true
+    && (value.status === undefined || value.status === "success")
+    && typeof value.transaction === "string" && value.transaction.length > 0
+    && typeof value.network === "string" && value.network.length > 0;
+}
+
 export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE_DIR, now = Date.now, ttlMs = DEFAULT_TTL_MS, io = fs } = {}) {
   if (!stateDir) throw new TypeError("stateDir is required");
   if (!Number.isInteger(ttlMs) || ttlMs <= 0) throw new TypeError("ttlMs must be a positive integer");
@@ -109,7 +116,7 @@ export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE
     return {
       paymentHeaderHash,
       requestHash,
-      directory: join(root, paymentHeaderHash, requestHash),
+      directory: join(root, paymentHeaderHash),
     };
   }
 
@@ -164,7 +171,7 @@ export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE
     const storedResponse = storedSuccessResponse(response);
 
     await fault("beforePreparedWrite");
-    await mkdir(join(root, identity.paymentHeaderHash), { recursive: true, mode: 0o700 });
+    await mkdir(root, { recursive: true, mode: 0o700 });
     try {
       await mkdir(identity.directory, { mode: 0o700 });
     } catch (error) {
@@ -192,7 +199,7 @@ export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE
     await fault("afterPreparedWrite");
     await fault("beforeSettlement");
     const settlement = await settle();
-    if (settlement === false || settlement?.success === false) await markReconciliation(identity, prepared);
+    if (!settledSuccessfully(settlement)) await markReconciliation(identity, prepared);
     await fault("afterSettlement");
     await fault("beforeSettledWrite");
     await durableWrite(identity.directory, {
@@ -226,28 +233,52 @@ export function createPaymentJournal({ stateDir = process.env.CRYPTO_INTEL_STATE
     for (const payment of paymentDirectories) {
       if (!payment.isDirectory() || !HASH.test(payment.name)) continue;
       const paymentDirectory = join(root, payment.name);
-      for (const requestEntry of await readdir(paymentDirectory, { withFileTypes: true })) {
-        if (!requestEntry.isDirectory() || !HASH.test(requestEntry.name)) continue;
-        const identity = {
-          paymentHeaderHash: payment.name,
-          requestHash: requestEntry.name,
-          directory: join(paymentDirectory, requestEntry.name),
-        };
-        let value;
-        try {
-          value = await read(identity);
-        } catch (error) {
-          if (error instanceof PaymentReconciliationError) continue;
-          throw error;
-        }
-        if (now() - Date.parse(value.updatedAt) >= ttlMs) {
-          await rm(identity.directory, { recursive: true });
-          removed += 1;
-        }
+      let value;
+      try {
+        value = JSON.parse(await readFile(join(paymentDirectory, "state.json"), "utf8"));
+        validateState(value, payment.name, value?.requestHash);
+      } catch (error) {
+        if (error instanceof PaymentReconciliationError || error.code === "ENOENT" || error instanceof SyntaxError) continue;
+        throw error;
+      }
+      if (value.status === "settled" && now() - Date.parse(value.updatedAt) >= ttlMs) {
+        const { response: _expiredResponse, ...tombstone } = value;
+        await durableWrite(paymentDirectory, {
+          ...tombstone,
+          status: "reconciliation_required",
+          updatedAt: new Date(now()).toISOString(),
+        }, io);
+        removed += 1;
       }
     }
     return removed;
   }
 
-  return { stateDir, identify, execute, replay, cleanup };
+  async function readiness() {
+    const blockers = new Set();
+    const probe = join(root, `.readiness-${randomUUID()}`);
+    let file;
+    try {
+      await io.mkdir(root, { recursive: true, mode: 0o700 });
+      file = await io.open(probe, "wx", 0o600);
+      await file.sync();
+      await file.close();
+      file = null;
+      await io.rm(probe);
+      for (const entry of await io.readdir(root, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !HASH.test(entry.name)) throw new Error("unknown payment journal entry");
+        const value = JSON.parse(await io.readFile(join(root, entry.name, "state.json"), "utf8"));
+        validateState(value, entry.name, value?.requestHash);
+        if (value.status !== "settled") blockers.add("reconciliation-required");
+      }
+    } catch {
+      blockers.add("journal-unavailable");
+    } finally {
+      await file?.close().catch(() => {});
+      await io.rm(probe, { force: true }).catch(() => blockers.add("journal-unavailable"));
+    }
+    return { status: blockers.size ? 503 : 200, blockers: [...blockers].sort() };
+  }
+
+  return { stateDir, identify, execute, replay, cleanup, readiness };
 }

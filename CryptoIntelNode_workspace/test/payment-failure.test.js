@@ -37,6 +37,12 @@ const response = {
   },
 };
 const paymentHeader = "signed-wallet-secret";
+const settlementSuccess = {
+  success: true,
+  status: "success",
+  transaction: "0xsettled",
+  network: "eip155:1",
+};
 
 async function fixture(context, options = {}) {
   const stateDir = await mkdtemp(join(tmpdir(), "crypto-payment-journal-"));
@@ -51,7 +57,7 @@ async function run(journal, overrides = {}) {
     paymentHeader,
     request,
     response,
-    settle: async () => { settlements += 1; },
+    settle: async () => { settlements += 1; return settlementSuccess; },
     flush: async (value) => { flushes += 1; assert.deepEqual(value, response); },
     ...overrides,
   });
@@ -149,7 +155,7 @@ for (const point of ["afterPreparedWrite", "beforeSettlement", "afterSettlement"
         paymentHeader,
         request,
         response,
-        settle: async () => { settlements += 1; },
+        settle: async () => { settlements += 1; return settlementSuccess; },
         flush: async () => { flushes += 1; },
       }),
       PaymentReconciliationError,
@@ -188,11 +194,15 @@ for (const status of [400, 503]) {
   });
 }
 
-test("Given the same payment with a different canonical request, when executed, then results never cross", async (context) => {
+test("Given the same payment proof with a different canonical request, when executed, then it fails closed without a second settlement", async (context) => {
   const { journal } = await fixture(context);
   await run(journal);
-  const different = await run(journal, { request: { ...request, query: { ...request.query, address: "0xdef" } } });
-  assert.deepEqual(different, { result: { replayed: false }, settlements: 1, flushes: 1 });
+  let settlements = 0;
+  await assert.rejects(run(journal, {
+    request: { ...request, query: { ...request.query, address: "0xdef" } },
+    settle: async () => { settlements += 1; return settlementSuccess; },
+  }), PaymentReconciliationError);
+  assert.equal(settlements, 0);
 });
 
 test("Given an unknown or truncated state, when read, then it fails closed", async (context) => {
@@ -214,7 +224,34 @@ test("Given settlement reports failure, when executed, then success is withheld 
   await assert.rejects(run(createPaymentJournal({ stateDir })), PaymentReconciliationError);
 });
 
-test("Given expired and fresh records, when cleanup runs, then only expired valid journal entries are removed", async (context) => {
+test("Given the SDK returns its complete success shape without the optional status extension, when executed, then it settles", async (context) => {
+  const { journal } = await fixture(context);
+  const { status: _optionalStatus, ...sdkSuccess } = settlementSuccess;
+  const result = await run(journal, { settle: async () => sdkSuccess });
+  assert.deepEqual(result.result, { replayed: false });
+});
+
+for (const [name, settlement] of [
+  ["null", null],
+  ["undefined", undefined],
+  ["incomplete success", { success: true }],
+  ["pending success", { ...settlementSuccess, status: "pending" }],
+  ["success without transaction", { ...settlementSuccess, transaction: "" }],
+  ["success without network", { ...settlementSuccess, network: "" }],
+]) {
+  test(`Given settlement returns ${name}, when executed, then it requires reconciliation and never flushes success`, async (context) => {
+    const { stateDir, journal } = await fixture(context);
+    let flushes = 0;
+    await assert.rejects(run(journal, {
+      settle: async () => settlement,
+      flush: async () => { flushes += 1; },
+    }), PaymentReconciliationError);
+    assert.equal(flushes, 0);
+    await assert.rejects(run(createPaymentJournal({ stateDir })), PaymentReconciliationError);
+  });
+}
+
+test("Given expired and fresh records, when cleanup runs, then expired responses become reconciliation tombstones and cannot be charged again", async (context) => {
   let now = Date.parse("2026-07-11T00:00:00.000Z");
   const { stateDir, journal } = await fixture(context, { now: () => now });
   await run(journal);
@@ -226,6 +263,11 @@ test("Given expired and fresh records, when cleanup runs, then only expired vali
 
   assert.equal(await journal.cleanup(), 1);
   assert.equal(await readFile(outside, "utf8"), "keep");
+  let settlements = 0;
+  await assert.rejects(run(journal, {
+    settle: async () => { settlements += 1; return settlementSuccess; },
+  }), PaymentReconciliationError);
+  assert.equal(settlements, 0);
   const fresh = await run(journal, { paymentHeader: "fresh-payment" });
   assert.deepEqual(fresh, { result: { replayed: true }, settlements: 0, flushes: 1 });
 });

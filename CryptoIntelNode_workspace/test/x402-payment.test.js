@@ -137,7 +137,10 @@ test("Given an official synthetic payment, when requested and replayed, then 402
   assert.equal(replay.status, 200);
   assert.deepEqual(await replay.json(), paidBody);
   assert.deepEqual(calls, { handler: 1, verify: 1, settlement: 1 });
-  assert.equal((await readFile(join(stateDir, "http", "results", (await createPaymentJournal({ stateDir }).identify(signature(), { method: "GET", path: "/v1/token-risk-score", query: { network, address, locale: "en-US" } })).paymentHeaderHash, (await createPaymentJournal({ stateDir }).identify(signature(), { method: "GET", path: "/v1/token-risk-score", query: { network, address, locale: "en-US" } })).requestHash, "state.json"), "utf8")).includes(signature()), false);
+  const identity = createPaymentJournal({ stateDir }).identify(signature(), {
+    method: "GET", path: "/v1/token-risk-score", query: { network, address, locale: "en-US" },
+  });
+  assert.equal((await readFile(join(identity.directory, "state.json"), "utf8")).includes(signature()), false);
 });
 
 test("Given an invalid signature, when requested, then handler and settlement remain zero", async () => {

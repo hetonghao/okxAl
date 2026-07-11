@@ -71,6 +71,13 @@ test("Given 正式候选资料 When 校验 Then 注册字段与阻塞态一致",
   const readiness = JSON.parse(readinessText);
   assert.equal(readiness.status, "blocked");
   assert.deepEqual(readiness.blockers.map(({ code }) => code), ["endpoint", "payment-asset", "live-registration"]);
+  const paymentBlocker = readiness.blockers.find(({ code }) => code === "payment-asset");
+  assert.equal(
+    paymentBlocker.reason,
+    "支付 tuple（network/contract/decimals/amountAtomic/payTo/symbol）尚未完成具名审批。",
+    "支付 blocker 必须中性列出完整 tuple，不能预设资产",
+  );
+  assert.doesNotMatch(readinessText, /USDT0?|USDG/, "注册 readiness 不得预设 USDT、USDT0 或 USDG");
   assert.equal(readiness.liveRegistered, false, "不得虚假声称已完成线上注册");
 });
 

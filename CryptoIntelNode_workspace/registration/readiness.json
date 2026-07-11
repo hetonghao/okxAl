@@ -9,7 +9,7 @@
     },
     {
       "code": "payment-asset",
-      "reason": "0.02 USDT 的支付网络、资产合约、精度、原子金额与收款地址尚未完成具名审批。"
+      "reason": "支付 tuple（network/contract/decimals/amountAtomic/payTo/symbol）尚未完成具名审批。"
     },
     {
       "code": "live-registration",

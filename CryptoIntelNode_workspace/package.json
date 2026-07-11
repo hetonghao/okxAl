@@ -9,7 +9,7 @@
   "scripts": {
     "check": "node --check test/workspace.test.js",
     "test": "node --test",
-    "test:x402": "node --test test/x402.test.js",
+    "test:x402": "node --test test/x402-payment.test.js",
     "readiness": "node scripts/check-gates.js"
   },
   "dependencies": {

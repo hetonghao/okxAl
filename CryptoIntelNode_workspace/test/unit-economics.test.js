@@ -28,10 +28,14 @@ test("Given retry cost consumes contribution, when economics run, then it is blo
   assert.ok(result.economics.netContributionUsd < 0.005);
 });
 
-test("Given the wrong payment asset or mixed A2A quote, when gates run, then it is blocked", () => {
+test("Given an incomplete payment tuple or mixed A2A quote, when gates run, then it is blocked", () => {
   const assetFixture = readyFixture();
-  assetFixture.payment.asset = "USDT";
+  assetFixture.payment.tuple.contract = "0x0";
   assert.equal(evaluateGates(assetFixture, now).ready, false);
+
+  const symbolFixture = readyFixture();
+  symbolFixture.payment.tuple.symbol = "";
+  assert.equal(evaluateGates(symbolFixture, now).ready, false);
 
   const quoteFixture = readyFixture();
   quoteFixture.payment.a2aQuote.mode = "included-in-api-price";

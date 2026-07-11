@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requiredSourceStrings = ["id", "endpoint", "plan", "docsUrl", "termsUrl", "reviewedAt", "attribution"];
 const explicitYesFields = ["commercialServerUse", "derivativePaidOutput", "cache", "realFixtureRetention"];
+const evmAddress = /^0x(?!0{40}$)[0-9a-fA-F]{40}$/;
 
 function object(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -80,8 +81,18 @@ export function evaluateGates(input, now = new Date().toISOString()) {
   if (!payment) reasons.push("payment must be an object");
   else {
     reasons.push(...approvalReasons(payment, "payment", nowMs));
-    if (payment.apiFixedPriceUsd !== 0.02) reasons.push("payment.apiFixedPriceUsd must be 0.02");
-    if (payment.asset !== "USDT0") reasons.push("payment.asset must be USDT0");
+    if (payment.listingFee !== "0.02") reasons.push("payment.listingFee must be 0.02");
+    if (payment.runtimePrice !== "$0.02") reasons.push("payment.runtimePrice must be $0.02");
+    const tuple = object(payment.tuple);
+    if (!tuple) reasons.push("payment.tuple must be an object");
+    else {
+      if (typeof tuple.network !== "string" || !/^eip155:[1-9][0-9]*$/.test(tuple.network)) reasons.push("payment.tuple.network is invalid");
+      if (!evmAddress.test(tuple.contract ?? "")) reasons.push("payment.tuple.contract is invalid");
+      if (!Number.isSafeInteger(tuple.decimals) || tuple.decimals <= 0) reasons.push("payment.tuple.decimals is invalid");
+      if (typeof tuple.amountAtomic !== "string" || !/^[1-9][0-9]*$/.test(tuple.amountAtomic)) reasons.push("payment.tuple.amountAtomic is invalid");
+      if (!evmAddress.test(tuple.payTo ?? "")) reasons.push("payment.tuple.payTo is invalid");
+      if (placeholder(tuple.symbol)) reasons.push("payment.tuple.symbol is required");
+    }
     if (!finiteNumber(payment.settlementCostUsd) || payment.settlementCostUsd < 0) reasons.push("payment.settlementCostUsd must be non-negative");
     if (object(payment.a2aQuote)?.mode !== "separate") reasons.push("payment.a2aQuote.mode must be separate");
   }

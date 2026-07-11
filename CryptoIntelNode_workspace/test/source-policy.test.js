@@ -33,13 +33,21 @@ export function readyFixture(source = approvedSource()) {
   return {
     dataSources: { policyVersion: "1.0", sources: [source] },
     payment: {
-      apiFixedPriceUsd: 0.02,
-      asset: "USDT0",
+      listingFee: "0.02",
+      runtimePrice: "$0.02",
       settlementCostUsd: 0.001,
       status: "approved",
       approvedBy: "finance@example.invalid",
       approvedAt: "2026-07-10T00:00:00.000Z",
       expiresAt: "2026-08-10T00:00:00.000Z",
+      tuple: {
+        network: "eip155:196",
+        contract: "0x1111111111111111111111111111111111111111",
+        decimals: 6,
+        amountAtomic: "20000",
+        payTo: "0x2222222222222222222222222222222222222222",
+        symbol: "SYNTH",
+      },
       a2aQuote: { mode: "separate", status: "not-configured" },
     },
     economics: {

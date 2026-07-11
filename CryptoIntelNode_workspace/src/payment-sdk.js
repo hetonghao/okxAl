@@ -3,6 +3,7 @@ import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import {
   paymentMiddleware,
   paymentMiddlewareFromHTTPServer,
+  x402HTTPResourceServer,
   x402ResourceServer,
 } from "@okxweb3/x402-express";
 
@@ -11,5 +12,6 @@ export {
   OKXFacilitatorClient,
   paymentMiddleware,
   paymentMiddlewareFromHTTPServer,
+  x402HTTPResourceServer,
   x402ResourceServer,
 };

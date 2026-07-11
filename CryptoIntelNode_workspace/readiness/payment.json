@@ -1,11 +1,19 @@
 {
-  "apiFixedPriceUsd": 0.02,
-  "asset": "USDT0",
+  "listingFee": "0.02",
+  "runtimePrice": "$0.02",
   "settlementCostUsd": null,
   "status": "pending",
   "approvedBy": null,
   "approvedAt": null,
   "expiresAt": null,
+  "tuple": {
+    "network": null,
+    "contract": null,
+    "decimals": null,
+    "amountAtomic": null,
+    "payTo": null,
+    "symbol": null
+  },
   "a2aQuote": {
     "mode": "separate",
     "status": "not-configured"

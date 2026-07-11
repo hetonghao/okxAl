@@ -45,7 +45,7 @@ function localizedSummary(level, locale) {
 export function createRiskService({ sources, loadSource, cache = createEvidenceCache(), now = Date.now, requestId = randomUUID } = {}) {
   if (!Array.isArray(sources) || sources.length === 0 || typeof loadSource !== "function") throw new TypeError("sources and loadSource are required");
 
-  async function load(source, network, address) {
+  async function load(source, network, address, signal) {
     const key = evidenceCacheKey({
       sourceId: source.id,
       sourcePolicyVersion: source.policyVersion,
@@ -54,7 +54,7 @@ export function createRiskService({ sources, loadSource, cache = createEvidenceC
       address,
     });
     return cache.getOrLoad(key, async () => {
-      const value = await loadSource({ sourceId: source.id, network, address });
+      const value = await loadSource({ sourceId: source.id, network, address, signal });
       const current = now();
       if (!validSourceEvidence(value, source.id, current)) throw new TypeError(`${source.id} returned incomplete or invalid evidence`);
       const policyExpiry = Date.parse(source.policyExpiresAt);
@@ -65,10 +65,10 @@ export function createRiskService({ sources, loadSource, cache = createEvidenceC
   }
 
   return {
-    async assess({ network, address, locale = "zh-CN" }) {
+    async assess({ network, address, locale = "zh-CN", signal }) {
       if (!new Set(["zh-CN", "en-US"]).has(locale)) throw new TypeError("locale is invalid");
       const normalizedAddress = address?.toLowerCase();
-      const values = await Promise.all(sources.map((source) => load(source, network, normalizedAddress)));
+      const values = await Promise.all(sources.map((source) => load(source, network, normalizedAddress, signal)));
       const assessment = scoreRisk(values.flatMap(scoringEvidence), { now: new Date(now()).toISOString() });
       return {
         requestId: requestId(),

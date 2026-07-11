@@ -4,6 +4,10 @@ import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { createApp } from "../src/app.js";
+import { EvidenceUnavailableError } from "../src/scoring.js";
+import { startServer } from "../src/server.js";
+
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const openapi = JSON.parse(await readFile(resolve(workspace, "openapi/token-risk-score-v1.json"), "utf8"));
 const route = openapi.paths["/v1/token-risk-score"].get;
@@ -33,6 +37,26 @@ function validateSuccess(body) {
   for (const dimension of schemas.RiskScoreResponse.properties.dimensions.required) {
     assert.equal(Object.hasOwn(body.dimensions, dimension), true);
   }
+}
+
+async function runtimeProblem(context, overrides = {}) {
+  const app = createApp({
+    admission: overrides.admission ?? { run: (operation) => operation({ signal: new AbortController().signal }), readiness: () => ({ status: 200 }) },
+    gateReader: overrides.gateReader ?? (async () => ({ source: { status: 200 }, payment: { status: 200 }, economics: { status: 200 } })),
+    readinessChecks: {
+      cache: async () => ({ status: 200 }),
+      journal: async () => ({ status: 200 }),
+      spool: async () => ({ status: 200, blockers: [] }),
+    },
+    paymentMiddleware: (_request, _response, next) => next(),
+    riskService: overrides.riskService ?? { assess: async () => { throw new Error("unexpected assess"); } },
+    logger: () => {},
+    requestId: () => "contract-request",
+  });
+  const server = await startServer({ app, port: 0 });
+  context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/token-risk-score?network=eip155%3A1&address=0x1111111111111111111111111111111111111111`);
+  return { response, body: await response.json() };
 }
 
 test("Given the paid route, when parsed, then its query boundary is exact", () => {
@@ -94,6 +118,24 @@ test("Given business errors, when parsed, then each maps to problem+json with sc
   assert.deepEqual(route.responses["422"]["x-error-codes"], ["invalid_address", "unsupported_network", "invalid_locale"]);
   assert.deepEqual(route.responses["404"]["x-error-codes"], ["asset_not_found"]);
   assert.deepEqual(route.responses["503"]["x-error-codes"], ["evidence_unavailable", "upstream_unavailable"]);
+});
+
+test("Given runtime 503 paths, when called over HTTP, then every response uses a published OpenAPI code", async (context) => {
+  const published = route.responses["503"]["x-error-codes"];
+  const cases = [
+    [{ gateReader: async () => ({ source: { status: 200 }, payment: { status: 503 }, economics: { status: 200 } }) }, "upstream_unavailable"],
+    [{ admission: { run: async () => { throw Object.assign(new Error("full"), { name: "AdmissionError", status: 503 }); }, readiness: () => ({ status: 200 }) } }, "upstream_unavailable"],
+    [{ riskService: { assess: async () => { throw new EvidenceUnavailableError(["liquidity"]); } } }, "evidence_unavailable"],
+  ];
+
+  for (const [options, expectedCode] of cases) {
+    const { response, body } = await runtimeProblem(context, options);
+    assert.equal(response.status, 503);
+    assert.match(response.headers.get("content-type"), /^application\/problem\+json/);
+    assert.equal(body.code, expectedCode);
+    assert.equal(published.includes(body.code), true, `runtime emitted unpublished 503 code: ${body.code}`);
+    for (const field of schemas.Problem.required) assert.equal(Object.hasOwn(body, field), true);
+  }
 });
 
 test("Given an official payment challenge, when parsed, then 402 is passed through unchanged", () => {

@@ -83,6 +83,21 @@ test("cache expiry is the earliest policy or evidence expiry and cross-chain val
   assert.equal(calls, 3);
 });
 
+test("assessment abort signal reaches every source load", async () => {
+  const controller = new AbortController();
+  let receivedSignal;
+  const risk = service({
+    loadSource: async ({ signal }) => {
+      receivedSignal = signal;
+      return normalized();
+    },
+  });
+
+  await risk.assess({ network: "eip155:1", address, signal: controller.signal });
+
+  assert.equal(receivedSignal, controller.signal);
+});
+
 test("null malformed partial expired hung flaky and misleading upstream results never poison cache", async () => {
   for (const bad of [
     null,

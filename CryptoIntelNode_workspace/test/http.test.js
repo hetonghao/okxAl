@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 
 import { createAdmissionControl } from "../src/admission.js";
@@ -64,7 +65,8 @@ async function fixture(context, overrides = {}) {
     riskService: overrides.riskService ?? {
       assess: async (query) => {
         calls.risk += 1;
-        assert.deepEqual(query, { network: "eip155:1", address, locale: "en-US" });
+        assert.deepEqual({ network: query.network, address: query.address, locale: query.locale }, { network: "eip155:1", address, locale: "en-US" });
+        assert(query.signal instanceof AbortSignal);
         return assessment();
       },
     },
@@ -129,7 +131,7 @@ test("Given invalid query or blocked gates, when requested, then payment and ris
   const response = await json(await fetch(`${blocked.base}/v1/token-risk-score?${validQuery}`));
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("retry-after"), "1");
-  assert.equal(response.body.code, "payment_gate_blocked");
+  assert.equal(response.body.code, "upstream_unavailable");
   assert.deepEqual(blocked.calls, { payment: 0, risk: 0, settlement: 0 });
 });
 
@@ -168,6 +170,44 @@ test("Given synthetic ready and fake paid, when requested, then stable v1 output
   assert.deepEqual(Object.keys(response.body.dimensions), ["security", "liquidity", "concentration"]);
   assert.equal(response.body.freshness.expiresAt, "2026-07-11T00:05:00.000Z");
   assert.deepEqual(service.calls, { payment: 1, risk: 1, settlement: 0 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(service.admission.snapshot(), { active: 0, queued: 0, accepting: true });
+});
+
+test("Given an admitted HTTP request, when the client disconnects, then abort reaches risk work and the slot waits for work completion", async (context) => {
+  // Given
+  let assessmentStarted = false;
+  let receivedSignal;
+  let release;
+  let markAborted;
+  const aborted = new Promise((resolve) => { markAborted = resolve; });
+  const service = await fixture(context, {
+    admission: createAdmissionControl({ activeLimit: 1, queueLimit: 0 }),
+    riskService: {
+      assess: ({ signal }) => {
+        assessmentStarted = true;
+        receivedSignal = signal;
+        signal?.addEventListener("abort", markAborted, { once: true });
+        return new Promise((resolve) => { release = () => resolve(assessment()); });
+      },
+    },
+  });
+  const closed = new Promise((resolve) => {
+    const client = httpRequest(`${service.base}/v1/token-risk-score?${validQuery}`);
+    client.once("error", resolve);
+    client.end();
+    const wait = () => assessmentStarted ? client.destroy() : setImmediate(wait);
+    wait();
+  });
+
+  // When
+  await closed;
+  await aborted;
+
+  // Then
+  assert.equal(receivedSignal?.aborted, true);
+  assert.deepEqual(service.admission.snapshot(), { active: 1, queued: 0, accepting: false });
+  release();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(service.admission.snapshot(), { active: 0, queued: 0, accepting: true });
 });

@@ -74,28 +74,35 @@ function body(result) {
 
 function reserve(admission, paymentMiddleware, riskService) {
   return (request, response, next) => {
-    admission.run(() => new Promise((resolve, reject) => {
-      let done = false;
-      const finish = (error) => {
-        if (done) return;
-        done = true;
-        response.off("finish", finish);
-        response.off("close", finish);
-        error ? reject(error) : resolve();
-      };
-      response.once("finish", finish);
-      response.once("close", finish);
+    const controller = new AbortController();
+    const abort = () => controller.abort(new DOMException("client disconnected", "AbortError"));
+    const close = () => { if (!response.writableFinished) abort(); };
+    request.once("aborted", abort);
+    response.once("close", close);
+    admission.run(({ signal }) => new Promise((resolve, reject) => {
+      let assessmentStarted = false;
+      const finishPaymentResponse = () => { if (!assessmentStarted) resolve(); };
+      response.once("finish", finishPaymentResponse);
       const paid = (error) => {
-        if (error) return finish(error);
-        Promise.resolve(riskService.assess(request.riskQuery)).then((result) => response.status(200).json(body(result)), finish);
+        if (error) return reject(error);
+        if (signal.aborted) return reject(signal.reason);
+        assessmentStarted = true;
+        Promise.resolve(riskService.assess({ ...request.riskQuery, signal }))
+          .then((result) => response.status(200).json(body(result)))
+          .then(resolve, reject);
       };
       try {
         const pending = paymentMiddleware(request, response, paid);
-        if (pending?.catch) pending.catch(finish);
+        if (pending?.catch) pending.catch(reject);
       } catch (error) {
-        finish(error);
+        reject(error);
       }
-    })).catch(next);
+    }), { signal: controller.signal }).catch((error) => {
+      if (!controller.signal.aborted) next(error);
+    }).finally(() => {
+      request.off("aborted", abort);
+      response.off("close", close);
+    });
   };
 }
 

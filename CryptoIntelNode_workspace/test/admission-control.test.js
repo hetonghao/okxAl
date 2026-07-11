@@ -59,6 +59,36 @@ test("Given queued and active requests, when aborted, then capacity is released"
   assert.deepEqual(admission.snapshot(), { active: 0, queued: 0, accepting: true });
 });
 
+test("Given activeLimit one, when three clients abort before their work ends, then underlying concurrency stays one", async () => {
+  // Given
+  const admission = createAdmissionControl({ activeLimit: 1, queueLimit: 2, queueWaitMs: 500 });
+  const controllers = Array.from({ length: 3 }, () => new AbortController());
+  const gates = Array.from({ length: 3 }, deferred);
+  let running = 0;
+  let maximum = 0;
+  const requests = [];
+
+  // When
+  for (let index = 0; index < controllers.length; index += 1) {
+    requests.push(admission.run(async () => {
+      running += 1;
+      maximum = Math.max(maximum, running);
+      await gates[index].promise;
+      running -= 1;
+    }, { signal: controllers[index].signal }).catch((error) => error));
+    await tick();
+    controllers[index].abort(new Error(`client-${index}-closed`));
+    await tick();
+  }
+
+  // Then
+  assert.equal(maximum, 1, `underlying concurrency reached ${maximum}`);
+  assert.deepEqual(admission.snapshot(), { active: 1, queued: 0, accepting: true });
+  gates.forEach(({ resolve }) => resolve());
+  await Promise.all(requests);
+  assert.deepEqual(admission.snapshot(), { active: 0, queued: 0, accepting: true });
+});
+
 test("Given malformed policy, when constructed, then it is rejected", () => {
   // Given / When / Then
   assert.throws(() => createAdmissionControl({ activeLimit: 0 }), /activeLimit/);

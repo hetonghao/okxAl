@@ -51,12 +51,14 @@ export function createAdmissionControl(options = {}) {
       operation = Promise.reject(error);
     }
 
-    Promise.race([operation, cancelled]).then(entry.resolve, entry.reject).finally(() => {
+    Promise.race([operation, cancelled]).then(entry.resolve, entry.reject);
+    const release = () => {
       entry.signal?.removeEventListener("abort", abort);
       active -= 1;
       const next = queue.shift();
       if (next) start(next);
-    });
+    };
+    operation.then(release, release);
   };
 
   return {
